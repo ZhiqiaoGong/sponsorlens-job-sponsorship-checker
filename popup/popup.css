@@ -1,0 +1,386 @@
+:root {
+  color-scheme: light;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #0f172a;
+  background: #f8fafc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 380px;
+  min-height: 230px;
+  margin: 0;
+  background:
+    radial-gradient(circle at 100% 0, rgba(14, 165, 233, .09), transparent 34%),
+    #f8fafc;
+}
+
+button {
+  font: inherit;
+}
+
+.app {
+  padding: 16px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 16px;
+}
+
+.brand-mark {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border-radius: 12px;
+  background: #0f172a;
+  color: white;
+  font-size: 18px;
+  font-weight: 800;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, .16);
+}
+
+.topbar h1,
+.topbar p {
+  margin: 0;
+}
+
+.topbar h1 {
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.topbar p {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.icon-button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  margin-left: auto;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #dbe3ee;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, .72);
+  color: #475569;
+  cursor: pointer;
+  box-shadow: 0 2px 7px rgba(15, 23, 42, .06);
+  transition: background-color .15s ease, border-color .15s ease, color .15s ease, transform .15s ease;
+}
+
+.icon-button svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.icon-button:hover {
+  border-color: #cbd5e1;
+  background: white;
+  color: #0f172a;
+  transform: translateY(-1px);
+}
+
+.icon-button:active {
+  transform: translateY(0);
+}
+
+.state-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 112px;
+  padding: 16px;
+  border: 1px solid #e2e8f0;
+  border-radius: 15px;
+  background: rgba(255, 255, 255, .82);
+}
+
+.state-card strong {
+  font-size: 14px;
+}
+
+.state-card p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.spinner {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  border: 3px solid #dbeafe;
+  border-top-color: #2563eb;
+  border-radius: 999px;
+  animation: spin .8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.empty-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 10px;
+  background: #e2e8f0;
+  color: #475569;
+  font-size: 18px;
+}
+
+.verdict {
+  --status: #64748b;
+  padding: 16px;
+  border: 1px solid color-mix(in srgb, var(--status) 24%, #e2e8f0);
+  border-radius: 15px;
+  background: color-mix(in srgb, var(--status) 7%, white);
+}
+
+.verdict-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.status-dot {
+  width: 11px;
+  height: 11px;
+  margin-top: 6px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--status);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--status) 15%, transparent);
+}
+
+.overline,
+.verdict h2 {
+  margin: 0;
+}
+
+.overline {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.verdict h2 {
+  margin-top: 2px;
+  color: var(--status);
+  font-size: 20px;
+}
+
+.status-summary {
+  margin: 10px 0 0 21px;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.page-hint {
+  margin: 8px 0 0 21px;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .65);
+  color: #64748b;
+  font-size: 11px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 16px 2px 8px;
+}
+
+.section-heading h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.section-heading span {
+  color: #94a3b8;
+  font-size: 11px;
+}
+
+.evidence-list {
+  display: grid;
+  gap: 8px;
+  max-height: 290px;
+  overflow-y: auto;
+}
+
+.evidence-card {
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: white;
+}
+
+.evidence-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.category-pill {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--evidence-color) 12%, white);
+  color: var(--evidence-color);
+  font-size: 10px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.evidence-title {
+  min-width: 0;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evidence-quote {
+  margin: 8px 0;
+  color: #334155;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.locate-button {
+  min-height: 29px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: #f1f5f9;
+  color: #334155;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.locate-button:hover {
+  background: #e2e8f0;
+}
+
+.empty-evidence {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-top: 11px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 11px;
+  background: rgba(255, 255, 255, .72);
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.empty-evidence p {
+  margin: 0;
+}
+
+.empty-evidence strong {
+  color: #475569;
+}
+
+.empty-evidence svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  margin-top: 1px;
+  fill: none;
+  stroke: #64748b;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.has-no-evidence .section-heading {
+  display: none;
+}
+
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+  color: #64748b;
+  font-size: 10.5px;
+}
+
+.secondary-button {
+  display: inline-flex;
+  min-height: 34px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 9px;
+  background: white;
+  color: #334155;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.secondary-button svg,
+.privacy-note svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+}
+
+.secondary-button:hover {
+  background: #f1f5f9;
+}
+
+.privacy-note {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  text-align: right;
+}
+
+button:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.hidden {
+  display: none !important;
+}

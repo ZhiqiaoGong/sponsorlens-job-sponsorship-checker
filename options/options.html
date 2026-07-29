@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SponsorLens Settings</title>
+    <link rel="stylesheet" href="options.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="brand-mark">S</div>
+        <div>
+          <h1>SponsorLens Settings</h1>
+          <p>Customize page indicators and matching phrases.</p>
+        </div>
+      </header>
+
+      <section>
+        <h2>Display</h2>
+        <label class="toggle-row">
+          <span>
+            <strong>Show results on the page</strong>
+            <small>Show the first result briefly, then keep a compact status tab on the left edge.</small>
+          </span>
+          <input id="pageIndicator" type="checkbox">
+        </label>
+        <label class="toggle-row">
+          <span>
+            <strong>Automatically rescan dynamic pages</strong>
+            <small>Useful on sites such as LinkedIn and Workday that change jobs without a page reload.</small>
+          </span>
+          <input id="autoRescan" type="checkbox">
+        </label>
+        <label class="toggle-row">
+          <span>
+            <strong>Show the result on the toolbar icon</strong>
+            <small>Display a red NO, green YES, or yellow question mark.</small>
+          </span>
+          <input id="enableBadge" type="checkbox">
+        </label>
+        <label class="toggle-row">
+          <span>
+            <strong>Show a gray indicator when sponsorship is not mentioned</strong>
+            <small>A missing sponsorship statement does not mean sponsorship is available.</small>
+          </span>
+          <input id="showUnknownOnJobPages" type="checkbox">
+        </label>
+      </section>
+
+      <section>
+        <h2>Custom phrases</h2>
+        <p class="section-description">Enter one complete phrase per line. Matching is case-insensitive, and custom no-sponsorship phrases take priority.</p>
+        <label class="text-field">
+          <span>Mark as no sponsorship when these phrases appear</span>
+          <textarea id="customNoPhrases" rows="5" placeholder="Example: no immigration support for this role"></textarea>
+        </label>
+        <label class="text-field">
+          <span>Mark as sponsorship available when these phrases appear</span>
+          <textarea id="customYesPhrases" rows="5" placeholder="Example: new H-1B petitions supported"></textarea>
+        </label>
+      </section>
+
+      <div class="actions">
+        <button id="saveButton" type="button">Save settings</button>
+        <span id="saveStatus" role="status"></span>
+      </div>
+
+      <aside>
+        <strong>Privacy</strong>
+        <p>SponsorLens reads and analyzes page text only in your browser. It never sends job listing content to a server.</p>
+      </aside>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

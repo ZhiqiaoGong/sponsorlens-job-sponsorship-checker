@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SponsorLens</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <main class="app">
+      <header class="topbar">
+        <div class="brand-mark" aria-hidden="true">S</div>
+        <div>
+          <h1>SponsorLens</h1>
+          <p>Job Sponsorship Scanner</p>
+        </div>
+        <button id="settingsButton" class="icon-button" type="button" title="Settings" aria-label="Open settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+        </button>
+      </header>
+
+      <section id="loadingState" class="state-card loading-card">
+        <div class="spinner" aria-hidden="true"></div>
+        <div>
+          <strong>Reading this page</strong>
+          <p>All analysis runs locally in your browser.</p>
+        </div>
+      </section>
+
+      <section id="unavailableState" class="state-card hidden">
+        <div class="empty-icon" aria-hidden="true">↗</div>
+        <div>
+          <strong>This page cannot be scanned</strong>
+          <p>Chrome internal pages, the Chrome Web Store, and PDF viewers usually block extension access.</p>
+        </div>
+      </section>
+
+      <section id="resultState" class="hidden">
+        <div id="verdict" class="verdict">
+          <div class="verdict-row">
+            <span id="statusDot" class="status-dot"></span>
+            <div>
+              <p class="overline">Scan result</p>
+              <h2 id="statusLabel"></h2>
+            </div>
+          </div>
+          <p id="statusSummary" class="status-summary"></p>
+          <p id="pageHint" class="page-hint hidden"></p>
+        </div>
+
+        <div class="section-heading">
+          <h3>Evidence</h3>
+          <span id="evidenceCount"></span>
+        </div>
+        <div id="evidenceList" class="evidence-list"></div>
+        <div id="emptyEvidence" class="empty-evidence hidden">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="9"></circle>
+            <path d="M12 11v5"></path>
+            <path d="M12 8h.01"></path>
+          </svg>
+          <p><strong>No evidence to review.</strong> This is not confirmation that sponsorship is available.</p>
+        </div>
+      </section>
+
+      <footer>
+        <button id="rescanButton" class="secondary-button" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M20 11a8 8 0 1 0-2.34 5.66"></path>
+            <path d="M20 4v7h-7"></path>
+          </svg>
+          Scan again
+        </button>
+        <span class="privacy-note">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect width="14" height="10" x="5" y="11" rx="2"></rect>
+            <path d="M8 11V7a4 4 0 0 1 8 0v4"></path>
+          </svg>
+          Analyzed locally · Never uploaded
+        </span>
+      </footer>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
