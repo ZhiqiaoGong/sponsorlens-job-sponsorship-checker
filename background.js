@@ -25,6 +25,19 @@ chrome.runtime.onInstalled.addListener(() => {
 
 function updateBadge(tabId, result) {
   chrome.storage.sync.get(DEFAULT_SETTINGS, (settings) => {
+    if (
+      !result ||
+      !result.isLikelyJobPage ||
+      result.scanMode === "skipped" ||
+      result.scanMode === "page"
+    ) {
+      chrome.action.setBadgeText({ tabId, text: "" });
+      chrome.action.setTitle({
+        tabId,
+        title: "SponsorLens: this is not an individual job listing"
+      });
+      return;
+    }
     const badge = BADGES[result.status] || BADGES.unknown;
     const text = settings.enableBadge ? badge.text : "";
     chrome.action.setBadgeText({ tabId, text });

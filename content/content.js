@@ -15,9 +15,53 @@
   };
 
   const HOST_ID = "sponsorlens-root-v1";
+  const HIGHLIGHT_ID = "sponsorlens-highlight-v1";
   const AUTO_COLLAPSE_DELAY = 4800;
   const RESUME_COLLAPSE_DELAY = 2400;
   const SESSION_PRESENTED_KEY = "__sponsorlens_presented_jobs_v1";
+  const LOCATOR_MAX_ANCESTOR_DEPTH = 8;
+  const LOCATOR_MAX_CONTEXT_LENGTH = 2800;
+  const LOCATOR_STOP_WORDS = new Set([
+    "about",
+    "after",
+    "also",
+    "and",
+    "are",
+    "because",
+    "been",
+    "before",
+    "being",
+    "but",
+    "can",
+    "could",
+    "does",
+    "for",
+    "from",
+    "have",
+    "into",
+    "its",
+    "may",
+    "must",
+    "not",
+    "only",
+    "our",
+    "should",
+    "that",
+    "the",
+    "their",
+    "there",
+    "this",
+    "through",
+    "under",
+    "was",
+    "were",
+    "will",
+    "with",
+    "without",
+    "would",
+    "you",
+    "your"
+  ]);
   const EDGE_LABELS = {
     no: "NO",
     conditional: "LIMITED",
@@ -35,6 +79,19 @@
     observer: null,
     lastTextFingerprint: "",
     highlightedElement: null,
+    highlightOverlay: null,
+    highlightRange: null,
+    highlightUpdateFrame: null,
+    highlightScrollHandler: null,
+    highlightResizeHandler: null,
+    highlightResizeObserver: null,
+    highlightMutationObserver: null,
+    highlightExpectedText: "",
+    highlightPageUrl: "",
+    pendingDisclosure: null,
+    pendingDisclosureHandler: null,
+    pendingLocateTimer: null,
+    locatorGeneration: 0,
     highlightRestoreTimer: null,
     collapseTimer: null,
     autoCollapseDeadline: 0,
@@ -193,6 +250,7 @@
 
   function shouldRenderIndicator(result) {
     if (!state.settings.pageIndicator || state.indicatorDismissed) return false;
+    if (!result.isLikelyJobPage || result.scanMode !== "job") return false;
     if (result.status !== "unknown") return true;
     return result.isLikelyJobPage && state.settings.showUnknownOnJobPages;
   }
@@ -474,8 +532,23 @@
       const locate = makeElement("button", "primary", "Find on page");
       locate.type = "button";
       locate.addEventListener("click", () => {
-        locateEvidence(topEvidence);
-        collapseIndicator();
+        const response = locateEvidence(topEvidence, {
+          textLength: result.textLength,
+          detectedAt: result.detectedAt,
+          url: result.page && result.page.url
+        });
+        if (!response.ok) {
+          locate.textContent = response.reason === "not-visible"
+            ? "Match is hidden"
+            : "Text not found";
+          return;
+        }
+        locate.textContent = response.action === "expand"
+          ? "Open “… more”"
+          : response.matchMode === "exact"
+            ? "Found"
+            : "Closest match";
+        setTimeout(collapseIndicator, 450);
       });
       actions.append(locate);
     }
@@ -502,80 +575,1118 @@
   }
 
   function restoreHighlight() {
-    if (!state.highlightedElement) return;
-    const element = state.highlightedElement;
-    const previous = element.__sponsorLensPreviousStyle;
-    if (previous) {
-      element.style.outline = previous.outline;
-      element.style.outlineOffset = previous.outlineOffset;
-      element.style.backgroundColor = previous.backgroundColor;
-      element.style.scrollMarginTop = previous.scrollMarginTop;
-      delete element.__sponsorLensPreviousStyle;
+    state.locatorGeneration += 1;
+    clearTimeout(state.pendingLocateTimer);
+    state.pendingLocateTimer = null;
+    clearTimeout(state.highlightRestoreTimer);
+    state.highlightRestoreTimer = null;
+    if (state.pendingDisclosure && state.pendingDisclosureHandler) {
+      state.pendingDisclosure.removeEventListener(
+        "click",
+        state.pendingDisclosureHandler,
+        true
+      );
     }
-    state.highlightedElement = null;
+    state.pendingDisclosure = null;
+    state.pendingDisclosureHandler = null;
+    if (state.highlightScrollHandler) {
+      document.removeEventListener(
+        "scroll",
+        state.highlightScrollHandler,
+        true
+      );
+      state.highlightScrollHandler = null;
+    }
+    if (state.highlightResizeHandler) {
+      window.removeEventListener("resize", state.highlightResizeHandler);
+      state.highlightResizeHandler = null;
+    }
+    if (state.highlightResizeObserver) {
+      state.highlightResizeObserver.disconnect();
+      state.highlightResizeObserver = null;
+    }
+    if (state.highlightMutationObserver) {
+      state.highlightMutationObserver.disconnect();
+      state.highlightMutationObserver = null;
+    }
+    if (state.highlightUpdateFrame !== null) {
+      if (typeof window.cancelAnimationFrame === "function") {
+        window.cancelAnimationFrame(state.highlightUpdateFrame);
+      } else {
+        clearTimeout(state.highlightUpdateFrame);
+      }
+      state.highlightUpdateFrame = null;
+    }
+    state.highlightRange = null;
+    state.highlightExpectedText = "";
+    state.highlightPageUrl = "";
+    if (state.highlightOverlay) {
+      state.highlightOverlay.remove();
+      state.highlightOverlay = null;
+    }
+    if (state.highlightedElement) {
+      const element = state.highlightedElement;
+      const previous = element.__sponsorLensPreviousStyle;
+      if (previous) {
+        Object.entries(previous).forEach(([property, snapshot]) => {
+          if (!snapshot.value && !snapshot.priority) {
+            element.style.removeProperty(property);
+            return;
+          }
+          element.style.setProperty(property, snapshot.value, snapshot.priority);
+        });
+        delete element.__sponsorLensPreviousStyle;
+      }
+      state.highlightedElement = null;
+    }
   }
 
-  function findBestElement(evidence) {
-    const target = analyzer.normalizeText(evidence.matchedText).toLowerCase();
-    if (!target) return null;
-    const selector = "p, li, dd, dt, blockquote, article, section, div, span";
-    const elements = document.querySelectorAll(selector);
-    let best = null;
-    let bestLength = Infinity;
-    const maxElements = Math.min(elements.length, 10000);
+  function getInlineStyleSnapshot(element, property) {
+    return {
+      value: element.style.getPropertyValue(property),
+      priority: element.style.getPropertyPriority(property)
+    };
+  }
 
-    for (let index = 0; index < maxElements; index += 1) {
-      const element = elements[index];
-      if (element.closest(`#${HOST_ID}`)) continue;
-      const text = analyzer.normalizeText(element.innerText || element.textContent || "");
-      if (!text || text.length > 3000) continue;
-      if (text.toLowerCase().includes(target) && text.length < bestLength) {
-        best = element;
-        bestLength = text.length;
-      }
+  function getLocatorTokens(value) {
+    const matches = analyzer.normalizeText(value)
+      .toLowerCase()
+      .match(/[a-z0-9][a-z0-9.'’/+_-]*/g) || [];
+    return Array.from(new Set(matches.filter((word) => {
+      return word.length >= 3 && !LOCATOR_STOP_WORDS.has(word);
+    })));
+  }
+
+  function getLocatorElementText(element) {
+    if (!element) return "";
+    return analyzer.normalizeText(element.innerText || "");
+  }
+
+  function getLocatorComparableText(value) {
+    return analyzer.normalizeText(value).toLowerCase().replace(/\s+/g, " ");
+  }
+
+  function isLocatorElementVisible(element, visibilityCache) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE || !element.isConnected) {
+      return false;
+    }
+    if (visibilityCache.has(element)) return visibilityCache.get(element);
+    if (
+      element.id === HOST_ID ||
+      (element.closest && element.closest(`#${HOST_ID}`))
+    ) {
+      visibilityCache.set(element, false);
+      return false;
     }
 
-    if (best) return best;
-
-    const keywords = target
-      .split(/\s+/)
-      .filter((word) => word.length >= 6)
-      .sort((a, b) => b.length - a.length)
-      .slice(0, 3);
-    if (keywords.length < 2) return null;
-
-    for (let index = 0; index < maxElements; index += 1) {
-      const element = elements[index];
-      const text = analyzer.normalizeText(element.innerText || element.textContent || "").toLowerCase();
-      if (!text || text.length > 1800) continue;
-      if (keywords.every((word) => text.includes(word)) && text.length < bestLength) {
-        best = element;
-        bestLength = text.length;
+    let current = element;
+    let visible = true;
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      if (
+        current.hidden ||
+        String(current.getAttribute && current.getAttribute("aria-hidden")).toLowerCase() === "true"
+      ) {
+        visible = false;
+        break;
       }
+      const style = getComputedStyle(current);
+      if (
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        style.visibility === "collapse" ||
+        Number(style.opacity) === 0
+      ) {
+        visible = false;
+        break;
+      }
+      current = current.parentElement;
+    }
+
+    if (visible) {
+      visible = Array.from(element.getClientRects()).some((rect) => {
+        return rect.width > 0 && rect.height > 0;
+      });
+    }
+    visibilityCache.set(element, visible);
+    return visible;
+  }
+
+  function getLocatorContext(element) {
+    let current = element;
+    let best = getLocatorElementText(element);
+    let depth = 0;
+
+    while (
+      current &&
+      current.parentElement &&
+      current.parentElement !== document.body &&
+      depth < 5
+    ) {
+      const parentText = getLocatorElementText(current.parentElement);
+      if (!parentText || parentText.length > LOCATOR_MAX_CONTEXT_LENGTH) break;
+      if (parentText.length >= best.length) best = parentText;
+      current = current.parentElement;
+      depth += 1;
     }
     return best;
   }
 
-  function locateEvidence(evidence) {
-    restoreHighlight();
-    const element = findBestElement(evidence);
-    if (!element) return false;
+  function tokenCoverage(tokens, value) {
+    if (!tokens.length) return 0;
+    const haystack = new Set(getLocatorTokens(value));
+    const matched = tokens.filter((token) => haystack.has(token));
+    return matched.length / tokens.length;
+  }
 
+  function makeLocatorRange(node, target) {
+    if (!node || typeof document.createRange !== "function") return null;
+    const rawText = String(node.nodeValue || "");
+    const rawOffset = rawText.toLowerCase().indexOf(target);
+    if (rawOffset < 0) return null;
+    try {
+      const range = document.createRange();
+      range.setStart(node, rawOffset);
+      range.setEnd(node, rawOffset + target.length);
+      return range;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function mapLocatorTextNode(node) {
+    const rawText = String((node && node.nodeValue) || "");
+    let text = "";
+    const offsets = [];
+    let pendingWhitespace = -1;
+
+    for (let index = 0; index < rawText.length; index += 1) {
+      const character = rawText[index];
+      if (/[\s\u00a0]/.test(character)) {
+        if (text && pendingWhitespace < 0) pendingWhitespace = index;
+        continue;
+      }
+      if (pendingWhitespace >= 0) {
+        text += " ";
+        offsets.push(pendingWhitespace);
+        pendingWhitespace = -1;
+      }
+      text += character;
+      offsets.push(index);
+    }
+    return { node, text, offsets };
+  }
+
+  function makeMappedLocatorRange(segments, start, end) {
+    if (typeof document.createRange !== "function") return null;
+    const startSegment = segments.find((segment) => {
+      return start >= segment.start && start < segment.end;
+    });
+    const endSegment = segments.find((segment) => {
+      return end > segment.start && end <= segment.end;
+    });
+    if (!startSegment || !endSegment) return null;
+    const startOffset = startSegment.offsets[start - startSegment.start];
+    const endOffset = endSegment.offsets[end - endSegment.start - 1];
+    if (!Number.isFinite(startOffset) || !Number.isFinite(endOffset)) return null;
+
+    try {
+      const range = document.createRange();
+      range.setStart(startSegment.node, startOffset);
+      range.setEnd(endSegment.node, endOffset + 1);
+      return range;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function getAnchorWords(target, snippet) {
+    const targetTokens = getLocatorTokens(target);
+    const fallbackTokens = getLocatorTokens(snippet);
+    const combined = targetTokens.length ? targetTokens : fallbackTokens;
+    if (combined.length) {
+      return combined
+        .slice()
+        .sort((left, right) => right.length - left.length)
+        .slice(0, 8);
+    }
+    return target.split(/\s+/).filter(Boolean).slice(0, 4);
+  }
+
+  function addLocatorCandidate(
+    candidates,
+    element,
+    entry,
+    visibilityCache
+  ) {
+    if (
+      !element ||
+      element === document.body ||
+      element === document.documentElement ||
+      !isLocatorElementVisible(element, visibilityCache)
+    ) {
+      return;
+    }
+    let candidate = candidates.get(element);
+    if (!candidate) {
+      candidate = { element, entries: [] };
+      candidates.set(element, candidate);
+    }
+    candidate.entries.push(entry);
+  }
+
+  function collectLocatorCandidates(target, snippet) {
+    if (!document.body || typeof document.createTreeWalker !== "function") {
+      return { candidates: [], approximateTextLength: 0 };
+    }
+
+    const candidates = new Map();
+    const visibilityCache = new WeakMap();
+    const anchorWords = getAnchorWords(target, snippet);
+    const streamSegments = [];
+    let textStream = "";
+    const walker = document.createTreeWalker(
+      document.body,
+      NodeFilter.SHOW_TEXT
+    );
+    let approximateTextLength = 0;
+    let node = walker.nextNode();
+
+    while (node) {
+      const parent = node.parentElement;
+      const mapped = mapLocatorTextNode(node);
+      const text = mapped.text;
+      const lowerText = text.toLowerCase();
+      const irrelevant = parent && /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(parent.tagName);
+      const visible = parent && !irrelevant &&
+        isLocatorElementVisible(parent, visibilityCache);
+
+      if (visible && text) {
+        if (textStream) textStream += " ";
+        const streamStart = textStream.length;
+        textStream += text;
+        streamSegments.push({
+          node,
+          start: streamStart,
+          end: textStream.length,
+          offsets: mapped.offsets
+        });
+        const exactOffset = lowerText.indexOf(target);
+        const matchedAnchors = anchorWords.filter((word) => lowerText.includes(word));
+        const isAnchor = exactOffset >= 0 || matchedAnchors.length > 0;
+        const anchorOffset = exactOffset >= 0
+          ? exactOffset
+          : matchedAnchors.length
+            ? Math.max(0, lowerText.indexOf(matchedAnchors[0]))
+            : 0;
+
+        if (isAnchor) {
+          const entry = {
+            position: streamStart + anchorOffset,
+            focusElement: parent,
+            directExact: exactOffset >= 0,
+            range: exactOffset >= 0 ? makeLocatorRange(node, target) : null
+          };
+          let element = parent;
+          let depth = 0;
+          while (element && depth <= LOCATOR_MAX_ANCESTOR_DEPTH) {
+            addLocatorCandidate(
+              candidates,
+              element,
+              entry,
+              visibilityCache
+            );
+            if (
+              element === document.body ||
+              element === document.documentElement
+            ) {
+              break;
+            }
+            element = element.parentElement;
+            depth += 1;
+          }
+        }
+        approximateTextLength = textStream.length;
+      }
+      node = walker.nextNode();
+    }
+
+    let streamMatchIndex = textStream.toLowerCase().indexOf(target);
+    while (streamMatchIndex >= 0) {
+      const range = makeMappedLocatorRange(
+        streamSegments,
+        streamMatchIndex,
+        streamMatchIndex + target.length
+      );
+      if (range) {
+        let commonAncestor = range.commonAncestorContainer;
+        if (commonAncestor && commonAncestor.nodeType === Node.TEXT_NODE) {
+          commonAncestor = commonAncestor.parentElement;
+        }
+        const focusElement = range.startContainer &&
+          range.startContainer.nodeType === Node.TEXT_NODE
+          ? range.startContainer.parentElement
+          : commonAncestor;
+        const entry = {
+          position: streamMatchIndex,
+          focusElement,
+          directExact: true,
+          range
+        };
+        let element = commonAncestor;
+        let depth = 0;
+        while (element && depth <= LOCATOR_MAX_ANCESTOR_DEPTH) {
+          addLocatorCandidate(
+            candidates,
+            element,
+            entry,
+            visibilityCache
+          );
+          if (
+            element === document.body ||
+            element === document.documentElement
+          ) {
+            break;
+          }
+          element = element.parentElement;
+          depth += 1;
+        }
+      }
+      streamMatchIndex = textStream.toLowerCase().indexOf(
+        target,
+        streamMatchIndex + Math.max(1, target.length)
+      );
+    }
+
+    return {
+      candidates: Array.from(candidates.values()),
+      approximateTextLength
+    };
+  }
+
+  function scoreLocatorCandidate(
+    candidate,
+    evidence,
+    scanContext,
+    target,
+    targetTokens,
+    snippetTokens,
+    approximateTextLength
+  ) {
+    const text = getLocatorElementText(candidate.element);
+    if (!text) return null;
+    const lowerText = getLocatorComparableText(text);
+    const exact = lowerText.includes(target);
+    const targetMatch = tokenCoverage(targetTokens, text);
+    if (!exact) {
+      const requiredCoverage = targetTokens.length <= 1 ? 1 : 0.6;
+      if (targetMatch < requiredCoverage) return null;
+    }
+
+    const context = getLocatorContext(candidate.element);
+    const contextMatch = tokenCoverage(snippetTokens, context);
+    const scanTextLength = Number(scanContext && scanContext.textLength);
+    const evidenceIndex = Number(evidence.index);
+    const hasPosition = Number.isFinite(scanTextLength) &&
+      scanTextLength > 0 &&
+      Number.isFinite(evidenceIndex) &&
+      evidenceIndex >= 0 &&
+      approximateTextLength > 0;
+    const expectedPosition = hasPosition
+      ? Math.min(1, evidenceIndex / scanTextLength) * approximateTextLength
+      : null;
+    let bestEntry = candidate.entries[0];
+    if (hasPosition) {
+      bestEntry = candidate.entries.reduce((best, entry) => {
+        return Math.abs(entry.position - expectedPosition) <
+          Math.abs(best.position - expectedPosition)
+          ? entry
+          : best;
+      }, bestEntry);
+    }
+    const positionMatch = hasPosition
+      ? Math.max(
+        0,
+        1 - Math.abs(bestEntry.position - expectedPosition) /
+          Math.max(1, approximateTextLength * 0.45)
+      )
+      : 0.5;
+    const sizePenalty = Math.min(150, Math.log2(text.length + 1) * 12) +
+      (text.length > 3000 ? 420 : 0) +
+      (text.length > 10000 ? 260 : 0);
+    const score =
+      (exact ? 1000 : 0) +
+      targetMatch * 430 +
+      contextMatch * 380 +
+      positionMatch * 900 +
+      (bestEntry.directExact ? 90 : 0) -
+      sizePenalty;
+
+    return {
+      element: text.length > 1200 && bestEntry.focusElement
+        ? bestEntry.focusElement
+        : candidate.element,
+      container: candidate.element,
+      matchMode: exact ? "exact" : "context",
+      score,
+      range: bestEntry.range,
+      positionMatch,
+      contextMatch,
+      textLength: text.length
+    };
+  }
+
+  function findBestElement(evidence, scanContext) {
+    const target = getLocatorComparableText(evidence.matchedText);
+    if (!target) return null;
+    const snippet = analyzer.normalizeText(evidence.snippet || evidence.matchedText);
+    const targetTokens = getLocatorTokens(target);
+    const snippetTokens = getLocatorTokens(snippet);
+    const collected = collectLocatorCandidates(target, snippet);
+    const scored = collected.candidates
+      .map((candidate) => scoreLocatorCandidate(
+        candidate,
+        evidence,
+        scanContext || {},
+        target,
+        targetTokens,
+        snippetTokens,
+        collected.approximateTextLength
+      ))
+      .filter(Boolean);
+    if (!scored.length) return null;
+
+    const exactMatches = scored.filter((candidate) => {
+      return candidate.matchMode === "exact";
+    });
+    const pool = exactMatches.length ? exactMatches : scored;
+    pool.sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      if (right.positionMatch !== left.positionMatch) {
+        return right.positionMatch - left.positionMatch;
+      }
+      if (right.contextMatch !== left.contextMatch) {
+        return right.contextMatch - left.contextMatch;
+      }
+      return left.textLength - right.textLength;
+    });
+    return pool[0];
+  }
+
+  function getLocatorRangeRects(range) {
+    if (!range || typeof range.getClientRects !== "function") return [];
+    try {
+      return Array.from(range.getClientRects()).filter((rect) => {
+        return rect.width > 0 && rect.height > 0;
+      });
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function getLocatorTargetRects(range, fallbackElement) {
+    if (range) return getLocatorRangeRects(range);
+    if (!fallbackElement || typeof fallbackElement.getClientRects !== "function") {
+      return [];
+    }
+    try {
+      return Array.from(fallbackElement.getClientRects()).filter((rect) => {
+        return rect.width > 0 && rect.height > 0;
+      });
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function getLocatorRangeElement(range, fallbackElement) {
+    const startContainer = range && range.startContainer;
+    if (startContainer && startContainer.nodeType === Node.TEXT_NODE) {
+      return startContainer.parentElement || fallbackElement;
+    }
+    if (startContainer && startContainer.nodeType === Node.ELEMENT_NODE) {
+      return startContainer;
+    }
+    return fallbackElement;
+  }
+
+  function getLocatorOverflow(element) {
+    const style = getComputedStyle(element);
+    return {
+      x: String(style.overflowX || style.overflow || "visible").toLowerCase(),
+      y: String(style.overflowY || style.overflow || "visible").toLowerCase()
+    };
+  }
+
+  function isLocatorOverflowContainer(element) {
+    if (
+      !element ||
+      element === document.body ||
+      element === document.documentElement
+    ) {
+      return false;
+    }
+    const overflow = getLocatorOverflow(element);
+    const clipsY = /^(auto|scroll|overlay)$/.test(overflow.y);
+    const clipsX = /^(auto|scroll|overlay)$/.test(overflow.x);
+    return (
+      (clipsY && element.scrollHeight > element.clientHeight + 2) ||
+      (clipsX && element.scrollWidth > element.clientWidth + 2)
+    );
+  }
+
+  function getLocatorScrollContainers(range, fallbackElement) {
+    const containers = [];
+    let current = getLocatorRangeElement(range, fallbackElement);
+    while (current && current !== document.documentElement) {
+      if (isLocatorOverflowContainer(current)) containers.push(current);
+      current = current.parentElement;
+    }
+    return containers;
+  }
+
+  function getLocatorClippingAncestors(range, fallbackElement) {
+    const ancestors = [];
+    let current = getLocatorRangeElement(range, fallbackElement);
+    while (current && current !== document.documentElement) {
+      const overflow = getLocatorOverflow(current);
+      if (
+        /^(auto|scroll|overlay|hidden|clip)$/.test(overflow.x) ||
+        /^(auto|scroll|overlay|hidden|clip)$/.test(overflow.y)
+      ) {
+        ancestors.push({
+          element: current,
+          bounds: current.getBoundingClientRect(),
+          overflow
+        });
+      }
+      current = current.parentElement;
+    }
+    return ancestors;
+  }
+
+  function isLocatorRectContained(rect, bounds, overflow) {
+    const tolerance = 1;
+    const containedX = !/^(hidden|clip)$/.test(overflow.x) ||
+      (
+        rect.left >= bounds.left - tolerance &&
+        rect.right <= bounds.right + tolerance
+      );
+    const containedY = !/^(hidden|clip)$/.test(overflow.y) ||
+      (
+        rect.top >= bounds.top - tolerance &&
+        rect.bottom <= bounds.bottom + tolerance
+      );
+    return containedX && containedY;
+  }
+
+  function getCollapsedLocatorAncestor(range, fallbackElement) {
+    const rects = getLocatorTargetRects(range, fallbackElement);
+    if (!rects.length) return null;
+    return getLocatorClippingAncestors(range, fallbackElement)
+      .find((ancestor) => {
+        const hidden = /^(hidden|clip)$/.test(ancestor.overflow.x) ||
+          /^(hidden|clip)$/.test(ancestor.overflow.y);
+        const uncertainClippedTarget = !range &&
+          ancestor.element === fallbackElement &&
+          (
+            (
+              /^(hidden|clip)$/.test(ancestor.overflow.y) &&
+              ancestor.element.scrollHeight >
+                ancestor.element.clientHeight + 2
+            ) ||
+            (
+              /^(hidden|clip)$/.test(ancestor.overflow.x) &&
+              ancestor.element.scrollWidth >
+                ancestor.element.clientWidth + 2
+            )
+          );
+        return hidden && (
+          uncertainClippedTarget ||
+          !rects.every((rect) => {
+            return isLocatorRectContained(
+              rect,
+              ancestor.bounds,
+              ancestor.overflow
+            );
+          })
+        );
+      }) || null;
+  }
+
+  function isLocatorRangeRevealed(range, fallbackElement) {
+    const rangeElement = getLocatorRangeElement(range, fallbackElement);
+    return Boolean(
+      rangeElement &&
+      rangeElement.isConnected &&
+      getLocatorTargetRects(range, fallbackElement).length &&
+      !getCollapsedLocatorAncestor(range, fallbackElement)
+    );
+  }
+
+  function isLocatorMoreControl(control) {
+    const labels = [
+      control.innerText || control.textContent || "",
+      control.getAttribute && control.getAttribute("aria-label"),
+      control.getAttribute && control.getAttribute("title")
+    ].map((value) => analyzer.normalizeText(value || "")).filter(Boolean);
+    return labels.some((label) => {
+      if (label.length > 80) return false;
+      return /^(?:(?:…|\.{3})\s*)?(?:(?:show|see|read|view)\s+)?more(?:\s+(?:details|description|text))?$/i
+        .test(label);
+    });
+  }
+
+  function findLocatorDisclosure(range, fallbackElement) {
+    const targetElement = getLocatorRangeElement(range, fallbackElement);
+    if (!targetElement) return null;
+    const clipped = getCollapsedLocatorAncestor(range, fallbackElement);
+    const clippedContainer = clipped && clipped.element;
+    if (!clippedContainer) return null;
+
+    let scope = null;
+    if (typeof clippedContainer.closest === "function") {
+      try {
+        scope = clippedContainer.closest("[id^='JobDetails_AboutTheJob_']") ||
+          clippedContainer.closest("section, article");
+      } catch (_error) {
+        scope = null;
+      }
+    }
+    scope = scope || clippedContainer.parentElement || clippedContainer;
+    if (!scope || typeof scope.querySelectorAll !== "function") return null;
+
+    const controls = Array.from(
+      scope.querySelectorAll("button, [role='button']")
+    ).filter((control) => {
+      if (!isLocatorMoreControl(control)) return false;
+      return Array.from(control.getClientRects()).some((rect) => {
+        return rect.width > 0 && rect.height > 0;
+      });
+    });
+    if (!controls.length) return null;
+
+    const clippedRect = clippedContainer.getBoundingClientRect();
+    controls.sort((left, right) => {
+      const leftInside = typeof clippedContainer.contains === "function" &&
+        clippedContainer.contains(left) ? 1 : 0;
+      const rightInside = typeof clippedContainer.contains === "function" &&
+        clippedContainer.contains(right) ? 1 : 0;
+      if (rightInside !== leftInside) return rightInside - leftInside;
+      const leftRect = left.getBoundingClientRect();
+      const rightRect = right.getBoundingClientRect();
+      return Math.abs(leftRect.bottom - clippedRect.bottom) -
+        Math.abs(rightRect.bottom - clippedRect.bottom);
+    });
+    return controls[0];
+  }
+
+  function scrollLocatorContainerToTarget(
+    container,
+    range,
+    fallbackElement
+  ) {
+    const rects = getLocatorTargetRects(range, fallbackElement);
+    if (!rects.length || typeof container.getBoundingClientRect !== "function") {
+      return false;
+    }
+    const targetRect = rects[0];
+    const containerRect = container.getBoundingClientRect();
+    const currentTop = Number(container.scrollTop) || 0;
+    const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    const desiredTop = currentTop +
+      targetRect.top -
+      containerRect.top -
+      container.clientHeight * 0.42;
+    const nextTop = Math.max(0, Math.min(maxTop, desiredTop));
+    if (Math.abs(nextTop - currentTop) < 1) return false;
+    if (typeof container.scrollTo === "function") {
+      container.scrollTo({
+        top: nextTop,
+        left: Number(container.scrollLeft) || 0,
+        behavior: "auto"
+      });
+    } else {
+      container.scrollTop = nextTop;
+    }
+    return true;
+  }
+
+  function scrollLocatorMatchIntoView(range, fallbackElement) {
+    if (!range && !fallbackElement) return false;
+    const containers = getLocatorScrollContainers(range, fallbackElement);
+    let scrolled = false;
+    containers.forEach((container) => {
+      scrolled = scrollLocatorContainerToTarget(
+        container,
+        range,
+        fallbackElement
+      ) || scrolled;
+    });
+
+    const rects = getLocatorTargetRects(range, fallbackElement);
+    const firstRect = rects[0];
+    const root = document.documentElement;
+    const body = document.body;
+    const viewportHeight = Number(window.innerHeight) || 0;
+    const documentHeight = Math.max(
+      Number(root && root.scrollHeight) || 0,
+      Number(body && body.scrollHeight) || 0
+    );
+    const pageCanScroll = viewportHeight > 0 &&
+      documentHeight > viewportHeight + 2;
+    if (
+      firstRect &&
+      pageCanScroll &&
+      typeof window.scrollTo === "function" &&
+      (firstRect.top < 0 || firstRect.bottom > viewportHeight)
+    ) {
+      window.scrollTo({
+        top: Math.max(
+          0,
+          (Number(window.scrollY) || 0) +
+            firstRect.top -
+            viewportHeight * 0.42
+        ),
+        behavior: "auto"
+      });
+      scrolled = true;
+    }
+    return scrolled;
+  }
+
+  function intersectLocatorRect(rect, bounds, overflow) {
+    const clipsX = /^(auto|scroll|overlay|hidden|clip)$/.test(overflow.x);
+    const clipsY = /^(auto|scroll|overlay|hidden|clip)$/.test(overflow.y);
+    const top = clipsY ? Math.max(rect.top, bounds.top) : rect.top;
+    const bottom = clipsY ? Math.min(rect.bottom, bounds.bottom) : rect.bottom;
+    const left = clipsX ? Math.max(rect.left, bounds.left) : rect.left;
+    const right = clipsX ? Math.min(rect.right, bounds.right) : rect.right;
+    if (bottom <= top || right <= left) return null;
+    return {
+      top,
+      bottom,
+      left,
+      right,
+      width: right - left,
+      height: bottom - top
+    };
+  }
+
+  function getVisibleLocatorRangeRects(range) {
+    const viewportWidth = Number(window.innerWidth) || 0;
+    const viewportHeight = Number(window.innerHeight) || 0;
+    const viewport = {
+      top: 0,
+      bottom: viewportHeight || Number.POSITIVE_INFINITY,
+      left: 0,
+      right: viewportWidth || Number.POSITIVE_INFINITY
+    };
+    const rangeElement = getLocatorRangeElement(range, null);
+    if (
+      !rangeElement ||
+      !rangeElement.isConnected ||
+      !isLocatorElementVisible(rangeElement, new WeakMap())
+    ) {
+      return [];
+    }
+    const clippingAncestors = getLocatorClippingAncestors(
+      range,
+      rangeElement
+    );
+
+    return getLocatorRangeRects(range)
+      .map((rect) => intersectLocatorRect(
+        rect,
+        viewport,
+        { x: "hidden", y: "hidden" }
+      ))
+      .map((rect) => {
+        return clippingAncestors.reduce((visibleRect, ancestor) => {
+          return visibleRect &&
+            intersectLocatorRect(
+              visibleRect,
+              ancestor.bounds,
+              ancestor.overflow
+            );
+        }, rect);
+      })
+      .filter(Boolean);
+  }
+
+  function makeRangeHighlightMarker(rect) {
+    const marker = document.createElement("span");
+    marker.style.setProperty("position", "absolute", "important");
+    marker.style.setProperty("top", `${rect.top}px`, "important");
+    marker.style.setProperty("left", `${rect.left}px`, "important");
+    marker.style.setProperty("width", `${rect.width}px`, "important");
+    marker.style.setProperty("height", `${rect.height}px`, "important");
+    marker.style.setProperty("background", "rgba(254, 243, 199, 0.82)", "important");
+    marker.style.setProperty("outline", "3px solid #f59e0b", "important");
+    marker.style.setProperty("outline-offset", "2px", "important");
+    marker.style.setProperty("border-radius", "2px", "important");
+    marker.style.setProperty("box-sizing", "border-box", "important");
+    return marker;
+  }
+
+  function updateRangeHighlight() {
+    if (!state.highlightOverlay || !state.highlightRange) return;
+    if (state.highlightPageUrl && state.highlightPageUrl !== location.href) {
+      restoreHighlight();
+      return;
+    }
+    if (
+      state.highlightExpectedText &&
+      typeof state.highlightRange.toString === "function"
+    ) {
+      let currentText = "";
+      try {
+        currentText = getLocatorComparableText(
+          state.highlightRange.toString()
+        );
+      } catch (_error) {
+        restoreHighlight();
+        return;
+      }
+      if (currentText !== state.highlightExpectedText) {
+        restoreHighlight();
+        return;
+      }
+    }
+    const markers = getVisibleLocatorRangeRects(state.highlightRange)
+      .slice(0, 8)
+      .map(makeRangeHighlightMarker);
+    state.highlightOverlay.replaceChildren(...markers);
+  }
+
+  function scheduleRangeHighlightUpdate() {
+    if (state.highlightUpdateFrame !== null) return;
+    const update = () => {
+      state.highlightUpdateFrame = null;
+      updateRangeHighlight();
+    };
+    if (typeof window.requestAnimationFrame === "function") {
+      state.highlightUpdateFrame = window.requestAnimationFrame(update);
+    } else {
+      state.highlightUpdateFrame = setTimeout(update, 16);
+    }
+  }
+
+  function isLocatorHighlightNode(node) {
+    const element = node && node.nodeType === Node.ELEMENT_NODE
+      ? node
+      : node && node.parentElement;
+    return Boolean(
+      element &&
+      (
+        element.id === HIGHLIGHT_ID ||
+        (element.closest && element.closest(`#${HIGHLIGHT_ID}`))
+      )
+    );
+  }
+
+  function renderRangeHighlight(range, expectedText, pageUrl) {
+    if (!range || !document.documentElement) return null;
+    const overlay = document.createElement("div");
+    overlay.id = HIGHLIGHT_ID;
+    overlay.setAttribute("aria-hidden", "true");
+    overlay.style.setProperty("position", "fixed", "important");
+    overlay.style.setProperty("inset", "0 auto auto 0", "important");
+    overlay.style.setProperty("width", "0", "important");
+    overlay.style.setProperty("height", "0", "important");
+    overlay.style.setProperty("pointer-events", "none", "important");
+    overlay.style.setProperty("z-index", "2147483646", "important");
+
+    document.documentElement.appendChild(overlay);
+    state.highlightRange = range;
+    state.highlightExpectedText = getLocatorComparableText(expectedText || "");
+    state.highlightPageUrl = pageUrl || location.href;
+    state.highlightOverlay = overlay;
+    state.highlightScrollHandler = scheduleRangeHighlightUpdate;
+    state.highlightResizeHandler = scheduleRangeHighlightUpdate;
+    document.addEventListener("scroll", state.highlightScrollHandler, true);
+    window.addEventListener("resize", state.highlightResizeHandler);
+    if (typeof ResizeObserver === "function") {
+      state.highlightResizeObserver = new ResizeObserver(
+        scheduleRangeHighlightUpdate
+      );
+      const observed = new Set([
+        getLocatorRangeElement(range, null),
+        ...getLocatorClippingAncestors(range, null).map((item) => item.element)
+      ]);
+      observed.forEach((element) => {
+        if (element) state.highlightResizeObserver.observe(element);
+      });
+    }
+    if (typeof MutationObserver === "function") {
+      state.highlightMutationObserver = new MutationObserver((mutations) => {
+        if (mutations.some((mutation) => {
+          return !isLocatorHighlightNode(mutation.target);
+        })) {
+          scheduleRangeHighlightUpdate();
+        }
+      });
+      state.highlightMutationObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["aria-hidden", "class", "hidden", "style"],
+        characterData: true,
+        childList: true,
+        subtree: true
+      });
+    }
+    updateRangeHighlight();
+    return overlay;
+  }
+
+  function highlightLocatorElement(element, kind) {
     element.__sponsorLensPreviousStyle = {
-      outline: element.style.outline,
-      outlineOffset: element.style.outlineOffset,
-      backgroundColor: element.style.backgroundColor,
-      scrollMarginTop: element.style.scrollMarginTop
+      outline: getInlineStyleSnapshot(element, "outline"),
+      "outline-offset": getInlineStyleSnapshot(element, "outline-offset"),
+      "background-color": getInlineStyleSnapshot(element, "background-color"),
+      "box-shadow": getInlineStyleSnapshot(element, "box-shadow"),
+      "scroll-margin-top": getInlineStyleSnapshot(element, "scroll-margin-top")
     };
     element.style.setProperty("outline", "3px solid #f59e0b", "important");
     element.style.setProperty("outline-offset", "4px", "important");
-    element.style.setProperty("background-color", "#fef3c7", "important");
+    if (kind === "disclosure") {
+      element.style.setProperty(
+        "box-shadow",
+        "0 0 0 6px rgba(245, 158, 11, 0.2)",
+        "important"
+      );
+    } else {
+      element.style.setProperty("background-color", "#fef3c7", "important");
+    }
     element.style.setProperty("scroll-margin-top", "96px", "important");
-    element.scrollIntoView({ behavior: "smooth", block: "center" });
+    scrollLocatorMatchIntoView(null, element);
     state.highlightedElement = element;
-    clearTimeout(state.highlightRestoreTimer);
+  }
+
+  function guideToLocatorDisclosure(disclosure, evidence, scanContext, matchMode) {
+    highlightLocatorElement(disclosure, "disclosure");
+    const handler = () => {
+      if (state.pendingDisclosure !== disclosure) return;
+      state.pendingDisclosure = null;
+      state.pendingDisclosureHandler = null;
+      restoreHighlight();
+      const generation = state.locatorGeneration;
+      waitForLocatorReveal(evidence, scanContext, generation, 0);
+    };
+    state.pendingDisclosure = disclosure;
+    state.pendingDisclosureHandler = handler;
+    disclosure.addEventListener("click", handler, {
+      once: true,
+      capture: true
+    });
+    state.highlightRestoreTimer = setTimeout(restoreHighlight, 15000);
+    return {
+      ok: true,
+      action: "expand",
+      matchMode
+    };
+  }
+
+  function revealLocatorMatch(match, evidence, scanContext) {
+    const element = match.element;
+    if (!isLocatorRangeRevealed(match.range, element)) {
+      return { ok: false, reason: "not-visible" };
+    }
+    scrollLocatorMatchIntoView(match.range, element);
+    if (match.range && getVisibleLocatorRangeRects(match.range).length) {
+      renderRangeHighlight(
+        match.range,
+        evidence.matchedText,
+        scanContext && scanContext.url
+      );
+    } else if (!match.range) {
+      highlightLocatorElement(element, "evidence");
+    } else {
+      return { ok: false, reason: "not-visible" };
+    }
     state.highlightRestoreTimer = setTimeout(restoreHighlight, 7000);
-    return true;
+    return {
+      ok: true,
+      matchMode: match.matchMode,
+      stale: Boolean(
+        scanContext &&
+        scanContext.detectedAt &&
+        state.result &&
+        state.result.detectedAt !== scanContext.detectedAt
+      )
+    };
+  }
+
+  function waitForLocatorReveal(
+    evidence,
+    scanContext,
+    generation,
+    attempt,
+    revealedCount
+  ) {
+    const delays = [100, 140, 180, 220, 280, 360, 420];
+    if (
+      generation !== state.locatorGeneration ||
+      attempt >= delays.length ||
+      (
+        scanContext &&
+        scanContext.url &&
+        scanContext.url !== location.href
+      )
+    ) {
+      return;
+    }
+    state.pendingLocateTimer = setTimeout(() => {
+      state.pendingLocateTimer = null;
+      if (
+        generation !== state.locatorGeneration ||
+        (
+          scanContext &&
+          scanContext.url &&
+          scanContext.url !== location.href
+        )
+      ) {
+        return;
+      }
+      const match = findBestElement(evidence, scanContext);
+      const revealed = Boolean(
+        match &&
+        match.element &&
+        isLocatorRangeRevealed(match.range, match.element)
+      );
+      const nextRevealedCount = revealed
+        ? (Number(revealedCount) || 0) + 1
+        : 0;
+      if (revealed && nextRevealedCount >= 2) {
+        revealLocatorMatch(match, evidence, scanContext);
+        return;
+      }
+      waitForLocatorReveal(
+        evidence,
+        scanContext,
+        generation,
+        attempt + 1,
+        nextRevealedCount
+      );
+    }, delays[attempt]);
+  }
+
+  function locateEvidence(evidence, scanContext) {
+    restoreHighlight();
+    const match = findBestElement(evidence, scanContext);
+    if (!match || !match.element) {
+      return { ok: false, reason: "not-found" };
+    }
+    const disclosure = findLocatorDisclosure(match.range, match.element);
+    if (disclosure) {
+      return guideToLocatorDisclosure(
+        disclosure,
+        evidence,
+        scanContext,
+        match.matchMode
+      );
+    }
+    if (!isLocatorRangeRevealed(match.range, match.element)) {
+      return { ok: false, reason: "not-visible" };
+    }
+    return revealLocatorMatch(match, evidence, scanContext);
   }
 
   function publishResult(result) {
@@ -595,18 +1706,46 @@
     if (!text.trim()) return null;
     const nextFingerprint = fingerprint(text);
     if (!force && nextFingerprint === state.lastTextFingerprint) return state.result;
+    if (
+      !force &&
+      state.result &&
+      state.result.scanMode === "page" &&
+      state.result.page &&
+      state.result.page.url === location.href
+    ) {
+      state.lastTextFingerprint = nextFingerprint;
+      return state.result;
+    }
     state.lastTextFingerprint = nextFingerprint;
+    const pageWide = Boolean(options && options.pageWide);
 
     const result = analyzer.analyze(
       text,
       { url: location.href, title: document.title },
       {
         customNoPhrases: state.settings.customNoPhrases,
-        customYesPhrases: state.settings.customYesPhrases
+        customYesPhrases: state.settings.customYesPhrases,
+        skipNonJob: !pageWide,
+        pageWide
       }
     );
     state.result = result;
+
+    if (pageWide) {
+      restoreHighlight();
+      removeHost();
+      return result;
+    }
+
+    const previousJobKey = state.currentJobKey;
     maybeAutoPresent(result, text, Boolean(options && options.reveal));
+    if (
+      previousJobKey &&
+      state.currentJobKey &&
+      previousJobKey !== state.currentJobKey
+    ) {
+      restoreHighlight();
+    }
     renderIndicator(result);
     publishResult(result);
     return result;
@@ -622,13 +1761,22 @@
     if (!state.settings.autoRescan || !document.documentElement) return;
     state.observer = new MutationObserver((mutations) => {
       const meaningful = mutations.some((mutation) => {
+        if (isLocatorHighlightNode(mutation.target)) return false;
         if (mutation.type === "characterData") return true;
         return Array.from(mutation.addedNodes).some((node) => {
+          if (isLocatorHighlightNode(node)) return false;
           return node.nodeType === Node.TEXT_NODE ||
-            (node.nodeType === Node.ELEMENT_NODE && node.id !== HOST_ID);
+            (
+              node.nodeType === Node.ELEMENT_NODE &&
+              node.id !== HOST_ID &&
+              node.id !== HIGHLIGHT_ID
+            );
         });
       });
-      if (meaningful) scheduleScan(900);
+      if (meaningful) {
+        if (state.highlightRange) scheduleRangeHighlightUpdate();
+        scheduleScan(900);
+      }
     });
     state.observer.observe(document.documentElement, {
       childList: true,
@@ -648,11 +1796,33 @@
       sendResponse({ ok: true, result: scanPage(true, { reveal: true }) });
       return false;
     }
+    if (message.type === "SPONSORLENS_SCAN_ANYWAY") {
+      state.lastTextFingerprint = "";
+      sendResponse({ ok: true, result: scanPage(true, { pageWide: true }) });
+      return false;
+    }
     if (message.type === "SPONSORLENS_LOCATE") {
-      const evidence = state.result && state.result.evidence.find(
+      const currentEvidence = state.result && state.result.evidence.find(
         (item) => item.id === message.evidenceId
       );
-      sendResponse({ ok: Boolean(evidence && locateEvidence(evidence)) });
+      const evidence = message.evidence && message.evidence.matchedText
+        ? message.evidence
+        : currentEvidence;
+      const scanContext = message.scanContext || {
+        textLength: state.result && state.result.textLength,
+        detectedAt: state.result && state.result.detectedAt,
+        url: state.result && state.result.page && state.result.page.url
+      };
+      if (
+        scanContext.url &&
+        scanContext.url !== location.href
+      ) {
+        sendResponse({ ok: false, reason: "page-changed" });
+        return false;
+      }
+      sendResponse(evidence
+        ? locateEvidence(evidence, scanContext)
+        : { ok: false, reason: "not-found" });
       return false;
     }
     return false;

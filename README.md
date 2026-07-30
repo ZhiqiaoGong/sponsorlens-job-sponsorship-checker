@@ -22,7 +22,7 @@ On a job listing, the extension briefly opens the first clear result and then co
 
 ## Privacy
 
-Version 0.1.0 has no server and does not call external AI services. Page text is analyzed only in the current browser tab and is never uploaded.
+Version 0.2.0 has no server and does not call external AI services. Page text is analyzed only in the current browser tab and is never uploaded.
 
 SponsorLens needs access to HTTP and HTTPS pages so it can scan job listings automatically. Chrome internal pages, the Chrome Web Store, and some built-in PDF viewers do not allow extensions to run.
 
@@ -37,6 +37,7 @@ Click the gear icon in the extension popup to:
 
 ## Page indicator behavior
 
+- Automatic sponsorship decisions run only on pages that appear to contain one individual job listing.
 - A clear result opens automatically only the first time a job is recognized in the current tab session.
 - The result collapses after a few seconds. Hovering pauses the timer.
 - Scrolling, typing, or interacting with the page collapses an automatically opened result immediately.
@@ -46,6 +47,8 @@ Click the gear icon in the extension popup to:
 - Edge labels use **NO**, **YES**, **LIMITED**, **UNCLEAR**, and **NO INFO** so conditional and inconclusive results remain distinct.
 - Use **Hide on this page** to remove the tab for the rest of the current page session.
 
+On documentation, job collections, and other pages that do not look like an individual job listing, SponsorLens does not make an automatic decision or show a badge. Open the popup and choose **Scan entire page anyway** to run a one-time page-wide scan. Page-wide results stay in the popup, do not create a page indicator, and include a warning that unrelated jobs, legends, or documentation may be combined.
+
 ## Known limitations
 
 - Rule-based analysis cannot understand every employer policy. Always review the displayed evidence.
@@ -53,9 +56,16 @@ Click the gear icon in the extension popup to:
 - Workday, LinkedIn, and similar sites may load job text in stages. SponsorLens automatically rescans dynamic pages; use **Scan again** in the popup when needed.
 - Text inside cross-origin iframes, images, or unopened collapsed sections may not be readable.
 - `Must be authorized to work in the US` alone is marked **Needs review**, not **No sponsorship**.
+- Page classification is heuristic. Use **Scan entire page anyway** when a real job description is not recognized.
 
 ## Development
 
 SponsorLens uses Chrome Manifest V3 with no build step or third-party runtime dependencies.
 
 The core rules are in `lib/analyzer.js`. After changing a file, click the reload button on the extension card at `chrome://extensions`, then refresh the job listing.
+
+Run the regression tests with:
+
+```sh
+node --test tests/*.test.js
+```

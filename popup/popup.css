@@ -120,6 +120,15 @@ button {
   line-height: 1.45;
 }
 
+.state-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.non-job-card {
+  align-items: flex-start;
+}
+
 .spinner {
   width: 24px;
   height: 24px;
@@ -144,6 +153,33 @@ button {
   background: #e2e8f0;
   color: #475569;
   font-size: 18px;
+}
+
+.page-icon svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.scan-anyway-button {
+  min-height: 34px;
+  margin-top: 12px;
+  padding: 7px 11px;
+  border: 0;
+  border-radius: 9px;
+  background: #0f172a;
+  color: white;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.scan-anyway-button:hover {
+  background: #1e293b;
 }
 
 .verdict {
@@ -203,6 +239,12 @@ button {
   background: rgba(255, 255, 255, .65);
   color: #64748b;
   font-size: 11px;
+}
+
+.page-hint.page-wide {
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  color: #92400e;
 }
 
 .section-heading {
@@ -374,6 +416,10 @@ footer {
   justify-content: flex-end;
   gap: 5px;
   text-align: right;
+}
+
+.secondary-button.hidden + .privacy-note {
+  margin-left: auto;
 }
 
 button:focus-visible {
