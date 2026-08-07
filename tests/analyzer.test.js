@@ -85,6 +85,51 @@ test("automatic analysis still evaluates an individual job listing", () => {
   assert.ok(result.evidence.length > 0);
 });
 
+test("an embedded board listing is evaluated without the classic headings", () => {
+  const result = analyzer.analyze(
+    `
+      Software Engineer, New Grad
+      San Mateo, CA
+      IXL Learning is seeking New Grad Software Engineers to build new products.
+      This position requires you to be in our San Mateo, CA, headquarters office.
+      H1B sponsorship is available for this position.
+      WHAT YOU'LL BE DOING
+      As a Software Engineer, you will build the back-end wiring and the UI.
+      WHAT WE'RE LOOKING FOR
+      Apply now
+    `,
+    {
+      url: "https://www.ixl.com/company/careers?gh_jid=8662881002",
+      title: "IXL Learning | Join our team"
+    },
+    { skipNonJob: true }
+  );
+
+  assert.equal(result.isLikelyJobPage, true);
+  assert.equal(result.scanMode, "job");
+  assert.equal(result.status, "yes");
+});
+
+test("the careers index behind an embedded board is still skipped", () => {
+  const result = analyzer.analyze(
+    `
+      Join our team
+      Explore open roles across our offices.
+      Software Engineer, New Grad — San Mateo, CA
+      Senior Software Engineer — Raleigh-Durham, NC
+      Recruiting Coordinator, New Grad — San Mateo, CA
+    `,
+    {
+      url: "https://www.ixl.com/company/careers",
+      title: "IXL Learning | Join our team"
+    },
+    { skipNonJob: true }
+  );
+
+  assert.equal(result.isLikelyJobPage, false);
+  assert.equal(result.scanMode, "skipped");
+});
+
 test("explicit citizenship exclusions outrank a clearance requirement", () => {
   const result = analyzer.analyze(
     `
