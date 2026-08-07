@@ -61,6 +61,22 @@
         </label>
       </section>
 
+      <section>
+        <h2>Help improve local detection</h2>
+        <p class="section-description">Build a private training set from the job listings you browse.</p>
+        <label class="toggle-row">
+          <span>
+            <strong>Save job-language samples on this device</strong>
+            <small>Automatically saves eligible short sponsorship-related passages and treats the page result as correct unless you change it. Application forms and full job descriptions are excluded.</small>
+          </span>
+          <input id="collectLocalTrainingSamples" type="checkbox">
+        </label>
+        <div class="collection-note">
+          <span>Nothing is uploaded. If a result is wrong, use Wrong result? on the page, then review passage labels before export.</span>
+          <a class="review-link" href="../collector/collector.html" target="_blank" rel="noopener">Review observations</a>
+        </div>
+      </section>
+
       <div class="actions">
         <button id="saveButton" type="button">Save settings</button>
         <span id="saveStatus" role="status"></span>
@@ -68,7 +84,7 @@
 
       <aside>
         <strong>Privacy</strong>
-        <p>SponsorLens reads and analyzes page text only in your browser. It never sends job listing content to a server.</p>
+        <p>SponsorLens reads and analyzes page text only in your browser. Local training samples stay on this device unless you explicitly export a file.</p>
       </aside>
     </main>
     <script src="options.js"></script>

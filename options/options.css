@@ -112,6 +112,38 @@ input[type="checkbox"] {
   line-height: 1.5;
 }
 
+.collection-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin-top: 10px;
+  padding: 12px 13px;
+  border: 1px solid #dbeafe;
+  border-radius: 11px;
+  background: #f8fbff;
+  color: #475569;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.review-link {
+  flex: 0 0 auto;
+  border: 1px solid #bfdbfe;
+  border-radius: 9px;
+  padding: 7px 10px;
+  background: white;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.review-link:hover {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
 .text-field {
   display: block;
   margin-top: 15px;
@@ -178,4 +210,11 @@ aside {
 
 aside p {
   margin: 3px 0 0;
+}
+
+@media (max-width: 560px) {
+  .collection-note {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }

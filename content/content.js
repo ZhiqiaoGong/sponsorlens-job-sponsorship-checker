@@ -2,6 +2,8 @@
   "use strict";
 
   const analyzer = globalThis.SponsorLensAnalyzer;
+  const localModelPolicy = globalThis.SponsorLensLocalModelPolicy;
+  const collector = globalThis.SponsorLensCollector;
   if (!analyzer || globalThis.__sponsorLensLoaded) return;
   globalThis.__sponsorLensLoaded = true;
 
@@ -12,6 +14,10 @@
     showUnknownOnJobPages: true,
     customNoPhrases: [],
     customYesPhrases: []
+  };
+
+  const LOCAL_DEFAULT_SETTINGS = {
+    collectLocalTrainingSamples: false
   };
 
   const HOST_ID = "sponsorlens-root-v1";
@@ -69,10 +75,26 @@
     review: "UNCLEAR",
     unknown: "NO INFO"
   };
+  const FEEDBACK_LABELS = {
+    no: "No sponsorship",
+    conditional: "Conditional / limited sponsorship",
+    yes: "Sponsorship available",
+    review: "Needs review",
+    unknown: "Not mentioned",
+    "not-job": "Not an individual job listing"
+  };
 
   const state = {
     result: null,
     settings: { ...DEFAULT_SETTINGS },
+    collectionSettings: { ...LOCAL_DEFAULT_SETTINGS },
+    capturedFingerprints: new Set(),
+    feedbackLookupTokens: new Set(),
+    pageFeedbackByCapture: new Map(),
+    collectionFull: false,
+    collectionContext: null,
+    feedbackMenuOpen: false,
+    feedbackSaving: false,
     host: null,
     shadow: null,
     scanTimer: null,
@@ -106,13 +128,207 @@
     return new Promise((resolve) => {
       chrome.storage.sync.get(DEFAULT_SETTINGS, (settings) => {
         state.settings = settings;
-        resolve(settings);
+        if (!chrome.storage.local) {
+          resolve(settings);
+          return;
+        }
+        chrome.storage.local.get(LOCAL_DEFAULT_SETTINGS, (localSettings) => {
+          state.collectionSettings = {
+            ...LOCAL_DEFAULT_SETTINGS,
+            ...(localSettings || {})
+          };
+          resolve(settings);
+        });
       });
     });
   }
 
+  function isLinkedInPage() {
+    try {
+      return /(^|\.)linkedin\.com$/i.test(new URL(location.href).hostname);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function elementText(element) {
+    return String(
+      element && (element.innerText || element.textContent) || ""
+    ).trim();
+  }
+
+  function linkedInJobIdFromValue(value) {
+    const match = String(value || "").match(
+      /\/jobs\/view\/(?:[^/?#]*-)?(\d{5,})(?:[/?#]|$)/i
+    );
+    return match ? match[1] : "";
+  }
+
+  // LinkedIn's server-driven job pane rotates every CSS class name, but keeps
+  // component ids such as JobDetails_AboutTheJob_4449138344, which carry the job
+  // identifier the section was rendered for.
+  const LINKEDIN_SECTION_ID_PATTERN = /^JobDetails_.+_(\d{5,})$/;
+
+  function linkedInDetailSections() {
+    if (!isLinkedInPage() || typeof document.querySelectorAll !== "function") {
+      return [];
+    }
+    let matches = [];
+    try {
+      matches = Array.from(document.querySelectorAll('[id^="JobDetails_"]') || []);
+    } catch (_error) {
+      matches = [];
+    }
+    const sections = [];
+    matches.forEach((element) => {
+      const parsed = LINKEDIN_SECTION_ID_PATTERN.exec(
+        String(element && element.id || "")
+      );
+      if (!parsed) return;
+      const text = elementText(element);
+      if (!text) return;
+      sections.push({ element, jobId: parsed[1], text });
+    });
+    // An outer section already contains the text of anything nested inside it.
+    return sections.filter((section) => {
+      return !sections.some((other) => {
+        return other !== section &&
+          typeof other.element.contains === "function" &&
+          other.element.contains(section.element);
+      });
+    });
+  }
+
+  function linkedInDetailGroup() {
+    const groups = new Map();
+    linkedInDetailSections().forEach((section) => {
+      const group = groups.get(section.jobId) ||
+        { jobId: section.jobId, sections: [], length: 0 };
+      group.sections.push(section);
+      group.length += section.text.length;
+      groups.set(section.jobId, group);
+    });
+    // Sections from the previously opened job can linger through a transition,
+    // so the largest group is the pane currently on screen.
+    return Array.from(groups.values())
+      .sort((left, right) => right.length - left.length)[0] || null;
+  }
+
+  function linkedInDetailRoot() {
+    if (!isLinkedInPage() || typeof document.querySelectorAll !== "function") {
+      return null;
+    }
+    const selectors = [
+      ".jobs-search__job-details--container",
+      ".jobs-search__job-details",
+      ".scaffold-layout__detail",
+      ".jobs-details",
+      ".job-view-layout",
+      "#job-details"
+    ];
+    const seen = new Set();
+    const candidates = [];
+    selectors.forEach((selector, selectorIndex) => {
+      let matches = [];
+      try {
+        matches = Array.from(document.querySelectorAll(selector) || []);
+      } catch (_error) {
+        matches = [];
+      }
+      matches.forEach((element, matchIndex) => {
+        if (!element || seen.has(element)) return;
+        seen.add(element);
+        const text = elementText(element);
+        if (text.length < 80) return;
+        const hidden = element.getAttribute && element.getAttribute("aria-hidden") === "true";
+        const rectCount = typeof element.getClientRects === "function"
+          ? element.getClientRects().length
+          : 1;
+        const jobLinkCount = typeof element.querySelectorAll === "function"
+          ? element.querySelectorAll('a[href*="/jobs/view/"]').length
+          : 0;
+        let score = 1000 - (selectorIndex * 20) - matchIndex;
+        if (hidden || rectCount === 0) score -= 600;
+        if (/\b(?:about the job|job description|responsibilities|qualifications)\b/i.test(text)) {
+          score += 120;
+        }
+        if (jobLinkCount > 8) score -= 500;
+        score += Math.min(160, Math.floor(text.length / 100));
+        candidates.push({ element, score });
+      });
+    });
+    candidates.sort((left, right) => right.score - left.score);
+    return candidates[0] ? candidates[0].element : null;
+  }
+
+  function linkedInActiveJobId(detailRoot) {
+    const roots = [
+      { root: detailRoot, fromDetailRoot: true },
+      { root: document, fromDetailRoot: false }
+    ].filter((entry) => entry.root);
+    const linkSelectors = [
+      '.job-details-jobs-unified-top-card__job-title a[href*="/jobs/view/"]',
+      '.jobs-search-results-list__list-item--active a[href*="/jobs/view/"]',
+      'a[aria-current="page"][href*="/jobs/view/"]',
+      '[aria-current="true"] a[href*="/jobs/view/"]'
+    ];
+    for (const entry of roots) {
+      if (typeof entry.root.querySelector !== "function") continue;
+      for (const selector of linkSelectors) {
+        const link = entry.root.querySelector(selector);
+        const href = link && link.getAttribute && link.getAttribute("href");
+        const id = linkedInJobIdFromValue(href);
+        if (id) return { id, fromDetailRoot: entry.fromDetailRoot };
+      }
+    }
+    const attributeSelectors = [
+      ".jobs-search-results-list__list-item--active[data-occludable-job-id]",
+      '[aria-current="true"][data-job-id]',
+      '[aria-current="page"][data-job-id]'
+    ];
+    for (const selector of attributeSelectors) {
+      const element = typeof document.querySelector === "function"
+        ? document.querySelector(selector)
+        : null;
+      if (!element || typeof element.getAttribute !== "function") continue;
+      const rawId = element.getAttribute("data-occludable-job-id") ||
+        element.getAttribute("data-job-id") || "";
+      const match = String(rawId).match(/\d{5,}/);
+      if (match) return { id: match[0], fromDetailRoot: false };
+    }
+    return { id: "", fromDetailRoot: false };
+  }
+
+  function getLinkedInSnapshot() {
+    if (!isLinkedInPage()) return null;
+    const group = linkedInDetailGroup();
+    if (group) {
+      const primary = group.sections
+        .slice()
+        .sort((left, right) => right.text.length - left.text.length)[0];
+      return {
+        root: primary.element,
+        text: group.sections.map((section) => section.text).join("\n"),
+        activeJobId: group.jobId,
+        activeJobIdFromDetail: true
+      };
+    }
+    const root = linkedInDetailRoot();
+    const active = linkedInActiveJobId(root);
+    return {
+      root,
+      text: elementText(root),
+      activeJobId: active.id,
+      activeJobIdFromDetail: Boolean(root) && active.fromDetailRoot
+    };
+  }
+
   function getPageText() {
     if (!document.body) return "";
+    const linkedInSnapshot = getLinkedInSnapshot();
+    if (linkedInSnapshot && linkedInSnapshot.text.length >= 80) {
+      return linkedInSnapshot.text;
+    }
     return document.body.innerText || document.body.textContent || "";
   }
 
@@ -163,7 +379,8 @@
     return state.presentedJobKeys.has(hashValue(jobKey));
   }
 
-  function getJobIdentity(text) {
+  function getJobIdentity(text, options) {
+    const requireReliable = Boolean(options && options.requireReliable);
     let url;
     try {
       url = new URL(location.href);
@@ -184,13 +401,69 @@
       "positionid"
     ]);
 
+    let parameterIdentity = "";
     for (const [name, value] of url.searchParams.entries()) {
       if (identityParameters.has(name.toLowerCase()) && value.trim().length >= 3) {
-        return `id:${url.origin}:${value.trim().toLowerCase()}`;
+        parameterIdentity = value.trim().toLowerCase();
+        break;
       }
     }
 
     const decodedPath = decodeURIComponent(url.pathname);
+    const isLinkedIn = /(^|\.)linkedin\.com$/i.test(url.hostname);
+    if (isLinkedIn) {
+      const snapshot = getLinkedInSnapshot();
+      const pathJobId = linkedInJobIdFromValue(decodedPath);
+      const parameterJobId = /^\d{5,}$/.test(parameterIdentity)
+        ? parameterIdentity
+        : "";
+      const activeJobId = snapshot && snapshot.activeJobId || "";
+      const availableIds = Array.from(new Set(
+        [activeJobId, pathJobId, parameterJobId].filter(Boolean)
+      ));
+      // The detail pane supplies both the scanned text and its own job link, so it
+      // stays authoritative even while a search URL still points at the previous
+      // job. Identifiers taken from outside that pane can describe a different
+      // listing, so they are only trusted when every source agrees. Without a
+      // detail pane the page text is a whole document, which is one listing only
+      // on a /jobs/view/ URL.
+      const detailJobId = snapshot && snapshot.activeJobIdFromDetail
+        ? activeJobId
+        : "";
+      const agreedJobId = snapshot && snapshot.root && availableIds.length === 1
+        ? availableIds[0]
+        : "";
+      const standaloneJobId = snapshot && snapshot.root ? "" : pathJobId;
+      const reliableJobId = detailJobId || agreedJobId || standaloneJobId;
+      if (requireReliable && !reliableJobId) return "";
+      const linkedInJobId = requireReliable
+        ? reliableJobId
+        : activeJobId || pathJobId || parameterJobId;
+      if (linkedInJobId) return `id:${url.origin}:${linkedInJobId}`;
+      if (requireReliable) return "";
+      const titleElement = document.querySelector(
+        ".job-details-jobs-unified-top-card__job-title, " +
+        ".jobs-unified-top-card__job-title, main h1"
+      );
+      const companyElement = document.querySelector(
+        ".job-details-jobs-unified-top-card__company-name, " +
+        ".jobs-unified-top-card__company-name"
+      );
+      const activeTitle = analyzer.normalizeText(
+        titleElement && (titleElement.innerText || titleElement.textContent) || ""
+      );
+      const activeCompany = analyzer.normalizeText(
+        companyElement && (companyElement.innerText || companyElement.textContent) || ""
+      );
+      if (activeTitle.length >= 3) {
+        return `linkedin-card:${url.origin}:${activeTitle.toLowerCase()}:${activeCompany.toLowerCase()}`;
+      }
+    }
+
+    if (parameterIdentity) {
+      return `id:${url.origin}:${parameterIdentity}`;
+    }
+
     const pathIdMatch =
       decodedPath.match(/(?:^|[_/-])(R-?\d{3,}|REQ-?\d{3,}|JR-?\d{3,}|JOB-?\d{3,})(?:$|[_/-])/i) ||
       decodedPath.match(/\/jobs?\/(?:[^/]+\/)*([a-z0-9][a-z0-9._-]{4,})\/?$/i);
@@ -229,23 +502,52 @@
   function isApplicationFlow(text) {
     const url = String(location.href || "").toLowerCase();
     if (
-      /\/(?:apply|application)(?:\/|$)|candidatehome|jobapplication|myapplications/.test(url)
+      /\/(?:apply|application)(?:[/?#]|$)|candidatehome|jobapplication|myapplications/.test(url) ||
+      /[?&#](?:apply|application|applicationstep|candidateflow|workflow)=(?:1|true|start|started|apply|application|[^&#]{3,})/.test(url) ||
+      /#\/?(?:apply|application)(?:[/?]|$)/.test(url)
     ) {
       return true;
     }
 
     const sample = analyzer.normalizeText(text).slice(0, 140000).toLowerCase();
-    const signals = [
+    const signalPatterns = [
       /\byour application\b/,
       /\bapplication questions\b/,
       /\breview and submit\b/,
       /\bsave and continue\b/,
       /\bvoluntary self[- ]identification\b/,
       /\bpersonal information\b/,
-      /\bmy experience\b/
+      /\bmy experience\b/,
+      /\bcontact (?:details|information)\b/,
+      /\b(?:upload|attach) (?:your )?(?:resume|cv)\b/,
+      /\b(?:resume|cv) upload\b/,
+      /\bcandidate information\b/,
+      /\bsubmit (?:your )?application\b/,
+      /\bcreate (?:an )?account\b/,
+      /\bsign in to apply\b/,
+      /\blegal name\b/,
+      /\bcover letter\b/
+    ];
+    const signals = signalPatterns.reduce(
+      (total, pattern) => total + (pattern.test(sample) ? 1 : 0),
+      0
+    );
+    const strongSignals = [
+      /\bapplication questions\b/,
+      /\breview and submit\b/,
+      /\bsave and continue\b/,
+      /\b(?:upload|attach) (?:your )?(?:resume|cv)\b/,
+      /\bsubmit (?:your )?application\b/
     ].reduce((total, pattern) => total + (pattern.test(sample) ? 1 : 0), 0);
     const formFieldCount = document.querySelectorAll("input, select, textarea").length;
-    return signals >= 2 || (signals >= 1 && formFieldCount >= 4);
+    const applicationFieldCount = document.querySelectorAll(
+      'form input[type="email"], form input[type="tel"], form input[type="file"], form textarea, form select'
+    ).length;
+    const hasApplicationFields = applicationFieldCount >= 2 || formFieldCount >= 4;
+    return (strongSignals >= 2 && hasApplicationFields) ||
+      (signals >= 3 && hasApplicationFields) ||
+      (signals >= 2 && applicationFieldCount >= 2) ||
+      (strongSignals >= 1 && applicationFieldCount >= 2);
   }
 
   function shouldRenderIndicator(result) {
@@ -469,6 +771,37 @@
       }
       .secondary:hover { color: #0f172a; text-decoration: underline; }
       .hint { margin: 10px 0 0 21px; color: #94a3b8; font-size: 11px; }
+      .collection-warning {
+        margin: 10px 0 0 21px; padding: 8px 9px; border: 1px solid #fed7aa;
+        border-radius: 8px; background: #fff7ed; color: #9a3412; font-size: 10.5px;
+      }
+      .feedback-panel {
+        margin: 12px 0 0 21px; padding: 10px; border: 1px solid #dbeafe;
+        border-radius: 10px; background: #f8fbff;
+      }
+      .feedback-heading { color: #334155; font-size: 11.5px; font-weight: 750; }
+      .feedback-summary { margin-top: 3px; color: #475569; font-size: 11px; }
+      .feedback-controls { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+      .feedback-button {
+        min-height: 34px; padding: 7px 10px; border: 1px solid #bfdbfe;
+        border-radius: 8px; background: white; color: #1e3a8a; cursor: pointer;
+        font: 700 11.5px/1.2 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .feedback-button:hover:not(:disabled) { border-color: #60a5fa; background: #eff6ff; }
+      .feedback-button.subtle { border-color: #e2e8f0; color: #64748b; }
+      .feedback-button:disabled { cursor: wait; opacity: .55; }
+      .feedback-options {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px;
+      }
+      .feedback-choice {
+        min-height: 36px; padding: 7px 8px; border: 1px solid #e2e8f0;
+        border-radius: 8px; background: white; color: #334155; cursor: pointer;
+        text-align: left; font: 650 11px/1.25 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .feedback-choice:hover:not(:disabled) { border-color: #93c5fd; background: #eff6ff; }
+      .feedback-choice.wide { grid-column: 1 / -1; }
+      .feedback-note { margin-top: 8px; color: #64748b; font-size: 10.5px; line-height: 1.4; }
+      .feedback-note.error { color: #b91c1c; }
       @media (max-width: 420px) {
         .card { width: calc(100vw - 64px); left: 50px; }
       }
@@ -557,6 +890,132 @@
     hide.addEventListener("click", dismissIndicator);
     actions.append(hide);
     body.append(actions);
+    const collectionContext = state.collectionContext;
+    if (
+      state.collectionSettings.collectLocalTrainingSamples &&
+      collectionContext &&
+      collectionContext.captureId === (collectionContext.capture && collectionContext.capture.captureId)
+    ) {
+      const feedback = collectionContext.pageFeedback || {
+        action: "none",
+        selectedStatus: null
+      };
+      const feedbackPanel = makeElement("section", "feedback-panel");
+      feedbackPanel.append(makeElement(
+        "div",
+        "feedback-heading",
+        "Local training feedback"
+      ));
+      if (feedback.action === "confirmed" && feedback.source === "indicator") {
+        feedbackPanel.append(makeElement(
+          "div",
+          "feedback-summary",
+          "Using the scanner result. Saved locally."
+        ));
+      } else if (feedback.action === "corrected") {
+        feedbackPanel.append(makeElement(
+          "div",
+          "feedback-summary",
+          `Correction saved: ${FEEDBACK_LABELS[feedback.selectedStatus] || "Updated result"}.`
+        ));
+      } else {
+        feedbackPanel.append(makeElement(
+          "div",
+          "feedback-summary",
+          "No action needed if this result is correct."
+        ));
+      }
+
+      const feedbackControls = makeElement("div", "feedback-controls");
+      if (feedback.action === "corrected") {
+        const useScannerResult = makeElement(
+          "button",
+          "feedback-button subtle",
+          "Use scanner result"
+        );
+        useScannerResult.type = "button";
+        useScannerResult.disabled = state.feedbackSaving;
+        useScannerResult.addEventListener("click", () => {
+          const hasTrainablePassage = Array.isArray(collectionContext.capture.candidates) &&
+            collectionContext.capture.candidates.length > 0;
+          submitCollectionFeedback(hasTrainablePassage ? "confirmed" : "clear");
+        });
+        feedbackControls.append(useScannerResult);
+      }
+      const changeFeedback = makeElement(
+        "button",
+        "feedback-button subtle",
+        feedback.action === "corrected" ? "Change correction" : "Wrong result?"
+      );
+      changeFeedback.type = "button";
+      changeFeedback.disabled = state.feedbackSaving;
+      changeFeedback.addEventListener("click", () => {
+        state.feedbackMenuOpen = !state.feedbackMenuOpen;
+        state.indicatorExpanded = true;
+        state.expansionMode = "manual";
+        clearCollapseTimer();
+        renderIndicator(result);
+      });
+      feedbackControls.append(changeFeedback);
+      feedbackPanel.append(feedbackControls);
+
+      if (state.feedbackMenuOpen) {
+        const options = makeElement("div", "feedback-options");
+        Object.entries(FEEDBACK_LABELS)
+          .filter(([status]) => status !== feedback.predictedStatus)
+          .forEach(([status, label]) => {
+            const choice = makeElement(
+              "button",
+              `feedback-choice${status === "not-job" ? " wide" : ""}`,
+              label
+            );
+            choice.type = "button";
+            choice.disabled = state.feedbackSaving;
+            choice.addEventListener("click", () => {
+              submitCollectionFeedback("corrected", status);
+            });
+            options.append(choice);
+          });
+        feedbackPanel.append(options);
+      }
+
+      let collectionMessage = "Saved locally as correct by default. The supporting passage still needs Review before export.";
+      let collectionMessageClass = "feedback-note";
+      if (state.feedbackSaving) {
+        collectionMessage = "Saving feedback locally…";
+      } else if (collectionContext.status === "saving") {
+        collectionMessage = "Saving this result as correct by default…";
+      } else if (collectionContext.status === "no-candidate") {
+        collectionMessage = "No trainable passage was found. Nothing is saved unless you change the result.";
+      } else if (collectionContext.status === "feedback-only") {
+        collectionMessage = "Correction saved for diagnostics; there is no passage to export.";
+      } else if (collectionContext.status === "full") {
+        collectionMessage = "The local review queue is full.";
+        collectionMessageClass += " error";
+      } else if (collectionContext.status === "error") {
+        collectionMessage = "SponsorLens could not save this observation locally.";
+        collectionMessageClass += " error";
+      } else if (collectionContext.status === "removed") {
+        collectionMessage = "This observation was removed from the local queue for this tab.";
+      } else if (collectionContext.status === "not-saved") {
+        collectionMessage = "Space is available again. Scan this job again or open another job to resume collection.";
+      }
+      const feedbackNote = makeElement(
+        "div",
+        collectionMessageClass,
+        collectionMessage
+      );
+      feedbackNote.setAttribute("aria-live", "polite");
+      feedbackPanel.append(feedbackNote);
+      body.append(feedbackPanel);
+    }
+    if (state.collectionFull) {
+      body.append(makeElement(
+        "div",
+        "collection-warning",
+        "Local review queue is full. Delete reviewed examples to resume collection."
+      ));
+    }
     body.append(
       makeElement(
         "div",
@@ -1700,6 +2159,252 @@
     }
   }
 
+  function buildCollectionCapture(result, candidates, jobKey, reason) {
+    return collector.buildCapture({
+      result,
+      candidates,
+      jobKey,
+      reason,
+      page: { url: location.href, title: document.title },
+      extensionVersion:
+        typeof chrome.runtime.getManifest === "function"
+          ? chrome.runtime.getManifest().version
+          : "unknown",
+      candidateExtractorVersion: localModelPolicy.VERSION
+    });
+  }
+
+  function renderCollectionUpdate(captureId) {
+    if (
+      state.collectionContext &&
+      state.collectionContext.captureId === captureId &&
+      state.result
+    ) {
+      renderIndicator(state.result);
+    }
+  }
+
+  function feedbackForCapture(capture, feedback) {
+    const predictedStatus = capture && capture.baseResult && capture.baseResult.status;
+    const normalized = collector.normalizePageFeedback(feedback, predictedStatus);
+    if (
+      normalized.action === "confirmed" &&
+      normalized.predictedStatus !== predictedStatus
+    ) {
+      return collector.defaultPageFeedback(predictedStatus);
+    }
+    return normalized;
+  }
+
+  function rememberPageFeedback(capture, feedback) {
+    if (!capture || !capture.captureId || !feedback) return;
+    state.pageFeedbackByCapture.set(
+      capture.captureId,
+      feedbackForCapture(capture, feedback)
+    );
+    if (state.pageFeedbackByCapture.size > 160) {
+      state.pageFeedbackByCapture.delete(
+        state.pageFeedbackByCapture.keys().next().value
+      );
+    }
+  }
+
+  function submitCollectionFeedback(action, selectedStatus) {
+    const context = state.collectionContext;
+    if (!context || !context.capture || state.feedbackSaving) return;
+    const capture = context.capture;
+    const captureId = context.captureId;
+    state.feedbackSaving = true;
+    state.feedbackMenuOpen = false;
+    state.indicatorExpanded = true;
+    state.expansionMode = "manual";
+    renderIndicator(state.result);
+    try {
+      chrome.runtime.sendMessage(
+        {
+          type: "SPONSORLENS_COLLECTION_FEEDBACK",
+          capture,
+          feedback: { action, selectedStatus: selectedStatus || null }
+        },
+        (response) => {
+          const error = chrome.runtime.lastError;
+          state.feedbackSaving = false;
+          const current = state.collectionContext;
+          if (error || !response || response.ok !== true) {
+            if (response && response.full) state.collectionFull = true;
+            if (current && current.captureId === captureId) {
+              current.status = response && response.full ? "full" : "error";
+            }
+          } else {
+            if (response.removed) {
+              state.pageFeedbackByCapture.delete(captureId);
+            } else {
+              rememberPageFeedback(capture, response.pageFeedback);
+            }
+            if (current && current.captureId === captureId) {
+              current.pageFeedback = response.removed
+                ? collector.defaultPageFeedback(capture.baseResult.status)
+                : feedbackForCapture(capture, response.pageFeedback);
+              current.status = response.removed
+                ? "no-candidate"
+                : response.trainable
+                  ? "saved"
+                  : "feedback-only";
+            }
+          }
+          renderCollectionUpdate(captureId);
+        }
+      );
+    } catch (_error) {
+      state.feedbackSaving = false;
+      const current = state.collectionContext;
+      if (current && current.captureId === captureId) current.status = "error";
+      renderCollectionUpdate(captureId);
+    }
+  }
+
+  function lookupCollectionFeedback(capture) {
+    const lookupToken = `${capture.captureId}:${capture.pageFingerprintHash}`;
+    if (state.feedbackLookupTokens.has(lookupToken)) return;
+    state.feedbackLookupTokens.add(lookupToken);
+    if (state.feedbackLookupTokens.size > 160) {
+      state.feedbackLookupTokens.delete(state.feedbackLookupTokens.values().next().value);
+    }
+    try {
+      chrome.runtime.sendMessage(
+        { type: "SPONSORLENS_COLLECTION_FEEDBACK_GET", capture },
+        (response) => {
+          const error = chrome.runtime.lastError;
+          if (error || !response || response.ok !== true) {
+            state.feedbackLookupTokens.delete(lookupToken);
+            return;
+          }
+          rememberPageFeedback(capture, response.pageFeedback);
+          const current = state.collectionContext;
+          if (current && current.captureId === capture.captureId) {
+            current.pageFeedback = feedbackForCapture(capture, response.pageFeedback);
+            if (response.found) {
+              current.status = response.trainable ? "saved" : "feedback-only";
+            }
+            renderCollectionUpdate(capture.captureId);
+          }
+        }
+      );
+    } catch (_error) {
+      state.feedbackLookupTokens.delete(lookupToken);
+    }
+  }
+
+  function maybeCollectTrainingSamples(text, result) {
+    if (
+      !state.collectionSettings.collectLocalTrainingSamples ||
+      !collector ||
+      !localModelPolicy ||
+      !result ||
+      !result.isLikelyJobPage ||
+      result.scanMode !== "job" ||
+      isApplicationFlow(text)
+    ) {
+      state.collectionContext = null;
+      state.feedbackMenuOpen = false;
+      return;
+    }
+
+    const candidates = localModelPolicy.extractCandidateWindows(text, {
+      maxWindows: collector.MAX_CANDIDATES
+    });
+    const jobKey = isLinkedInPage()
+      ? getJobIdentity(text, { requireReliable: true })
+      : state.currentJobKey || getJobIdentity(text);
+    if (!jobKey) {
+      state.collectionContext = null;
+      state.feedbackMenuOpen = false;
+      return;
+    }
+    const reason = collector.getSamplingReason(result, jobKey, candidates.length);
+    let capture = reason
+      ? buildCollectionCapture(result, candidates, jobKey, reason)
+      : null;
+    const hasTrainablePassage = Boolean(capture && capture.candidates.length);
+    if (!capture) {
+      capture = buildCollectionCapture(result, [], jobKey, "user-feedback");
+    }
+    if (!capture) {
+      state.collectionContext = null;
+      return;
+    }
+    const previousContext = state.collectionContext;
+    const sameCapture = previousContext &&
+      previousContext.captureId === capture.captureId;
+    if (!sameCapture) state.feedbackMenuOpen = false;
+    const cachedFeedback = sameCapture
+      ? previousContext.pageFeedback
+      : state.pageFeedbackByCapture.get(capture.captureId) || capture.pageFeedback;
+    state.collectionContext = {
+      captureId: capture.captureId,
+      capture,
+      status: hasTrainablePassage ? "saving" : "no-candidate",
+      pageFeedback: feedbackForCapture(capture, cachedFeedback)
+    };
+    if (!hasTrainablePassage) {
+      lookupCollectionFeedback(capture);
+      return;
+    }
+
+    if (state.collectionFull) {
+      state.collectionContext.status = "full";
+      return;
+    }
+
+    const captureToken = `${capture.captureId}:${capture.pageFingerprintHash}`;
+    if (state.capturedFingerprints.has(captureToken)) {
+      state.collectionContext.status = "saved";
+      return;
+    }
+    state.capturedFingerprints.add(captureToken);
+    if (state.capturedFingerprints.size > 120) {
+      state.capturedFingerprints.delete(state.capturedFingerprints.values().next().value);
+    }
+
+    try {
+      chrome.runtime.sendMessage(
+        { type: "SPONSORLENS_CAPTURE_SAMPLES", capture },
+        (response) => {
+          // Reading lastError prevents an expected console warning after reloads.
+          const error = chrome.runtime.lastError;
+          if (error || !response || response.ok !== true) {
+            state.capturedFingerprints.delete(captureToken);
+          }
+          if (response && response.full) {
+            state.collectionFull = true;
+          }
+          if (response && response.pageFeedback) {
+            rememberPageFeedback(capture, response.pageFeedback);
+          }
+          const current = state.collectionContext;
+          if (current && current.captureId === capture.captureId) {
+            if (error || !response || response.ok !== true) {
+              current.status = response && response.full ? "full" : "error";
+            } else {
+              current.status = "saved";
+              if (
+                response.pageFeedback &&
+                (!current.pageFeedback || current.pageFeedback.action === "none")
+              ) {
+                current.pageFeedback = feedbackForCapture(capture, response.pageFeedback);
+              }
+            }
+            renderCollectionUpdate(capture.captureId);
+          }
+        }
+      );
+    } catch (_error) {
+      // The extension may have been reloaded while this page stayed open.
+      state.capturedFingerprints.delete(captureToken);
+      state.collectionContext.status = "error";
+    }
+  }
+
   function scanPage(force, options) {
     clearTimeout(state.scanTimer);
     const text = getPageText();
@@ -1746,6 +2451,7 @@
     ) {
       restoreHighlight();
     }
+    maybeCollectTrainingSamples(text, result);
     renderIndicator(result);
     publishResult(result);
     return result;
@@ -1829,6 +2535,81 @@
   });
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName === "local") {
+      let collectionChanged = false;
+      let removedCapture = false;
+      if (collector) {
+        Object.entries(changes).forEach(([key, change]) => {
+          if (!collector.isItemKey(key)) return;
+          collectionChanged = true;
+          const storedItem = change.newValue;
+          const priorItem = change.oldValue;
+          const captureId = String(
+            storedItem && storedItem.captureId || priorItem && priorItem.captureId || ""
+          );
+          if (!captureId) return;
+          if (!storedItem) {
+            removedCapture = true;
+            state.pageFeedbackByCapture.delete(captureId);
+            Array.from(state.feedbackLookupTokens).forEach((token) => {
+              if (token.startsWith(`${captureId}:`)) {
+                state.feedbackLookupTokens.delete(token);
+              }
+            });
+            if (
+              state.collectionContext &&
+              state.collectionContext.captureId === captureId
+            ) {
+              state.collectionContext.pageFeedback = collector.defaultPageFeedback(
+                state.collectionContext.capture.baseResult.status
+              );
+              state.collectionContext.status = "removed";
+              state.feedbackMenuOpen = false;
+            }
+            return;
+          }
+          const storedFeedback = collector.normalizePageFeedback(
+            storedItem.pageFeedback,
+            storedItem.baseResult && storedItem.baseResult.status
+          );
+          const current = state.collectionContext;
+          const capture = current && current.captureId === captureId
+            ? current.capture
+            : {
+                captureId,
+                baseResult: storedItem.baseResult
+              };
+          rememberPageFeedback(capture, storedFeedback);
+          if (current && current.captureId === captureId) {
+            current.pageFeedback = feedbackForCapture(current.capture, storedFeedback);
+            current.status = Array.isArray(storedItem.candidates) && storedItem.candidates.length
+              ? "saved"
+              : storedFeedback.action === "none"
+                ? "no-candidate"
+                : "feedback-only";
+          }
+        });
+      }
+      if (removedCapture && state.collectionFull) {
+        state.collectionFull = false;
+        if (state.collectionContext && state.collectionContext.status === "full") {
+          state.collectionContext.status = "not-saved";
+        }
+      }
+      if (!changes.collectLocalTrainingSamples) {
+        if (collectionChanged && state.result) renderIndicator(state.result);
+        return;
+      }
+      state.collectionSettings.collectLocalTrainingSamples = Boolean(
+        changes.collectLocalTrainingSamples.newValue
+      );
+      if (!state.collectionSettings.collectLocalTrainingSamples) {
+        state.collectionFull = false;
+      }
+      state.lastTextFingerprint = "";
+      scanPage(true);
+      return;
+    }
     if (areaName !== "sync") return;
     Object.keys(changes).forEach((key) => {
       state.settings[key] = changes[key].newValue;

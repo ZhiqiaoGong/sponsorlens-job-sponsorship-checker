@@ -135,3 +135,65 @@ test("bare clearance eligibility language is flagged for review", () => {
     /must be eligible for clearance/i
   );
 });
+
+test("enumerated ITAR eligibility language is flagged for review", () => {
+  const result = analyzer.analyze(
+    `
+      Application Software Engineer, Applied AI
+      Itar Requirements
+      To conform to U.S. Government export regulations, applicant must be a
+      (i) U.S. citizen or national, (ii) U.S. lawful, permanent resident
+      (aka green card holder), (iii) Refugee under 8 U.S.C. 1157, or
+      (iv) Asylee under 8 U.S.C. 1158, or be eligible to obtain the required
+      authorizations from the U.S. Department of State. Learn more about the
+      ITAR here.
+    `,
+    {
+      url: "https://www.linkedin.com/jobs/view/4447241380",
+      title: "Application Software Engineer, Applied AI"
+    },
+    { skipNonJob: true }
+  );
+
+  assert.equal(result.status, "review");
+  assert.equal(result.evidence[0].ruleId, "us_person_export");
+  assert.equal(result.evidence[0].category, "review");
+  assert.equal(
+    result.evidence.some((item) => item.category === "no"),
+    false
+  );
+  assert.match(
+    result.evidence[0].matchedText,
+    /export regulations[\s\S]+applicant must be[\s\S]+U\.S\. citizen/i
+  );
+});
+
+test("citizenship or green-card requirements are treated as ineligible for sponsorship", () => {
+  const result = analyzer.analyze(
+    `
+      Platform Engineer
+      About the job
+      This position requires activities that are subject to US Export Control
+      Laws and require US Citizenship or Green Card Holder.
+      Benefits include a company-sponsored wellness stipend.
+      Apply for this job
+    `,
+    {
+      url: "https://www.linkedin.com/jobs/view/4435602102",
+      title: "Platform Engineer | Paperless Parts"
+    },
+    { skipNonJob: true }
+  );
+
+  assert.equal(result.status, "no");
+  assert.equal(result.evidence[0].ruleId, "citizen_resident_only");
+  assert.equal(result.evidence[0].category, "no");
+  assert.match(
+    result.evidence[0].matchedText,
+    /require US Citizenship or Green Card Holder/i
+  );
+  assert.equal(
+    result.evidence.some((item) => item.category === "yes"),
+    false
+  );
+});

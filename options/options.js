@@ -9,6 +9,10 @@ const DEFAULT_SETTINGS = {
   customYesPhrases: []
 };
 
+const LOCAL_DEFAULT_SETTINGS = {
+  collectLocalTrainingSamples: false
+};
+
 const ids = [
   "pageIndicator",
   "autoRescan",
@@ -34,6 +38,19 @@ function loadSettings() {
     document.getElementById("customYesPhrases").value =
       (settings.customYesPhrases || []).join("\n");
   });
+  chrome.storage.local.get(LOCAL_DEFAULT_SETTINGS, (settings) => {
+    document.getElementById("collectLocalTrainingSamples").checked = Boolean(
+      settings.collectLocalTrainingSamples
+    );
+  });
+}
+
+function showSaved() {
+  const status = document.getElementById("saveStatus");
+  status.textContent = "Saved";
+  setTimeout(() => {
+    status.textContent = "";
+  }, 1800);
 }
 
 function saveSettings() {
@@ -48,13 +65,17 @@ function saveSettings() {
     document.getElementById("customYesPhrases").value
   );
 
-  chrome.storage.sync.set(settings, () => {
-    const status = document.getElementById("saveStatus");
-    status.textContent = "Saved";
-    setTimeout(() => {
-      status.textContent = "";
-    }, 1800);
-  });
+  let pendingWrites = 2;
+  const onSaved = () => {
+    pendingWrites -= 1;
+    if (pendingWrites === 0) showSaved();
+  };
+  chrome.storage.sync.set(settings, onSaved);
+  chrome.storage.local.set({
+    collectLocalTrainingSamples: document.getElementById(
+      "collectLocalTrainingSamples"
+    ).checked
+  }, onSaved);
 }
 
 document.getElementById("saveButton").addEventListener("click", saveSettings);

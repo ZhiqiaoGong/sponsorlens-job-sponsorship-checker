@@ -22,7 +22,15 @@ On a job listing, the extension briefly opens the first clear result and then co
 
 ## Privacy
 
-Version 0.2.0 has no server and does not call external AI services. Page text is analyzed only in the current browser tab and is never uploaded.
+SponsorLens 0.4.0 has no server and does not call external AI services. Page text is analyzed only in the current browser tab and is never uploaded.
+
+The optional local data collection setting is off by default. When enabled, it
+keeps eligible short sponsorship-related passages in `chrome.storage.local` as
+local observations; it does not save full job descriptions, application forms,
+or raw tracking URLs. Nothing is uploaded automatically. The page result is
+treated as correct unless you change it, but this default applies only to
+page-level feedback. Only passages whose labels and exact evidence you review
+can be exported as verified JSONL training rows.
 
 SponsorLens needs access to HTTP and HTTPS pages so it can scan job listings automatically. Chrome internal pages, the Chrome Web Store, and some built-in PDF viewers do not allow extensions to run.
 
@@ -34,6 +42,7 @@ Click the gear icon in the extension popup to:
 - Turn off automatic rescanning on dynamic pages.
 - Hide the toolbar badge.
 - Add custom no-sponsorship or sponsorship phrases.
+- Enable local observation collection and open the Review page.
 
 ## Page indicator behavior
 
@@ -46,6 +55,7 @@ Click the gear icon in the extension popup to:
 - **Not mentioned** stays collapsed as a subtle gray tab.
 - Edge labels use **NO**, **YES**, **LIMITED**, **UNCLEAR**, and **NO INFO** so conditional and inconclusive results remain distinct.
 - Use **Hide on this page** to remove the tab for the rest of the current page session.
+- When local collection is enabled, an unchanged page result is saved as correct by default. Use **Wrong result?** to record a correction; corrected items are prioritized in Review. Feedback without a relevant passage remains diagnostic-only and cannot be exported.
 
 On documentation, job collections, and other pages that do not look like an individual job listing, SponsorLens does not make an automatic decision or show a badge. Open the popup and choose **Scan entire page anyway** to run a one-time page-wide scan. Page-wide results stay in the popup, do not create a page indicator, and include a warning that unrelated jobs, legends, or documentation may be combined.
 
@@ -63,6 +73,25 @@ On documentation, job collections, and other pages that do not look like an indi
 SponsorLens uses Chrome Manifest V3 with no build step or third-party runtime dependencies.
 
 The core rules are in `lib/analyzer.js`. After changing a file, click the reload button on the extension card at `chrome://extensions`, then refresh the job listing.
+
+The optional local-classifier work is isolated in `lib/local-model-policy.js` and
+`training/`. The policy extracts a small number of relevant text windows and
+allows only calibrated predictions to supplement `Needs review` or `Not
+mentioned`; it never overrides a clear rule result. The checked-in seed dataset
+is for pipeline tests only, so no model is enabled in the extension yet. See
+`training/README.md` for validation, training, evaluation, and ONNX export.
+
+The local collection pipeline is implemented in `lib/collector.js`,
+`background.js`, and `collector/`. It stores at most 500 job captures, merges
+repeat scans, requires exact evidence for reviewed labels, and exports only
+human-reviewed examples that match the training schema. A compact device-local
+ledger stores only exported row IDs, labels, and timestamps so later exports
+cannot silently duplicate or contradict earlier files; deleting queue items
+does not erase that history. The Review page also keeps one recoverable local
+copy of the most recent export, which can be downloaded again until it is
+replaced or the queue is explicitly cleared. A corrected row from the same
+capture is exported again with the same row ID so it can replace the earlier
+version without creating a second training example.
 
 Run the regression tests with:
 

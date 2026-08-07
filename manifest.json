@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SponsorLens — Job Sponsorship Scanner",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Scan job listings for visa sponsorship, work authorization, citizenship, export control, and security clearance language.",
   "permissions": [
     "storage"
@@ -37,6 +37,8 @@
       ],
       "js": [
         "lib/analyzer.js",
+        "lib/local-model-policy.js",
+        "lib/collector.js",
         "content/content.js"
       ],
       "run_at": "document_idle"

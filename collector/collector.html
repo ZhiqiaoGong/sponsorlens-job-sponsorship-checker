@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SponsorLens Training Review</title>
+    <link rel="stylesheet" href="collector.css">
+  </head>
+  <body>
+    <main class="page-shell">
+      <header class="page-header">
+        <div class="brand-mark" aria-hidden="true">S</div>
+        <div class="header-copy">
+          <p class="eyebrow">Local training data</p>
+          <h1>Review collected examples</h1>
+          <p>Page results are assumed correct unless you changed them. Label the supporting passages before export. Everything stays on this device unless you export a file.</p>
+        </div>
+        <div class="header-actions">
+          <button id="exportButton" class="button primary" type="button" disabled>Export ready (0)</button>
+          <button id="lastExportButton" class="button secondary" type="button" disabled>Download last export</button>
+          <button id="clearButton" class="button danger-quiet" type="button" disabled>Clear queue</button>
+        </div>
+      </header>
+
+      <section class="capacity-card" aria-labelledby="capacityLabel">
+        <div class="capacity-copy">
+          <span id="capacityLabel">Local review queue</span>
+          <strong id="capacityText">0 / 0</strong>
+        </div>
+        <div
+          id="capacityTrack"
+          class="capacity-track"
+          role="progressbar"
+          aria-labelledby="capacityLabel capacityText"
+          aria-valuemin="0"
+          aria-valuemax="0"
+          aria-valuenow="0"
+        >
+          <span id="capacityBar"></span>
+        </div>
+        <p id="capacityHint">Loading examples stored by SponsorLens…</p>
+      </section>
+
+      <div id="notice" class="notice hidden" role="status">
+        <span id="noticeText"></span>
+        <button id="dismissNoticeButton" type="button" aria-label="Dismiss message">×</button>
+      </div>
+
+      <div class="workspace">
+        <aside class="queue-panel" aria-label="Review queue">
+          <div class="queue-toolbar">
+            <div>
+              <h2>Queue</h2>
+              <span id="visibleCount">0 examples</span>
+            </div>
+            <button id="refreshButton" class="icon-button" type="button" aria-label="Refresh queue" title="Refresh queue">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 11a8 8 0 1 0-2.34 5.66"></path>
+                <path d="M20 4v7h-7"></path>
+              </svg>
+            </button>
+          </div>
+
+          <div id="filters" class="filters" aria-label="Filter queue">
+            <button class="filter-button selected" type="button" data-filter="all" aria-pressed="true">
+              <span>All</span><span id="countAll" class="filter-count">0</span>
+            </button>
+            <button class="filter-button" type="button" data-filter="pending" aria-pressed="false">
+              <span>Pending</span><span id="countPending" class="filter-count">0</span>
+            </button>
+            <button class="filter-button" type="button" data-filter="ready" aria-pressed="false">
+              <span>Ready</span><span id="countReady" class="filter-count">0</span>
+            </button>
+            <button class="filter-button" type="button" data-filter="exported" aria-pressed="false">
+              <span>Exported</span><span id="countExported" class="filter-count">0</span>
+            </button>
+          </div>
+
+          <div id="queueList" class="queue-list" aria-label="Collected examples"></div>
+          <div id="queueEmpty" class="queue-empty hidden">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"></path>
+              <path d="M14 2v6h6"></path>
+              <path d="M8 13h8M8 17h5"></path>
+            </svg>
+            <strong id="queueEmptyTitle">No examples yet</strong>
+            <p id="queueEmptyText">Collected observations will appear here after local collection is enabled.</p>
+          </div>
+        </aside>
+
+        <section class="review-panel" aria-label="Example review">
+          <div id="loadingState" class="panel-state">
+            <span class="spinner" aria-hidden="true"></span>
+            <strong>Loading review queue…</strong>
+          </div>
+
+          <div id="errorState" class="panel-state error-state hidden">
+            <span class="state-icon" aria-hidden="true">!</span>
+            <strong>Review queue unavailable</strong>
+            <p id="errorMessage">SponsorLens could not load the examples stored on this device.</p>
+            <button id="retryButton" class="button secondary" type="button">Try again</button>
+          </div>
+
+          <div id="noSelectionState" class="panel-state hidden">
+            <span class="state-icon" aria-hidden="true">✓</span>
+            <strong id="noSelectionTitle">Select an example</strong>
+            <p id="noSelectionText">Choose an item from the queue to review its candidate passages.</p>
+          </div>
+
+          <article id="reviewDetail" class="review-detail hidden">
+            <header class="detail-header">
+              <div class="detail-title">
+                <div class="detail-kicker">
+                  <span id="detailStatus" class="status-pill">Pending</span>
+                  <span id="detailPosition">Example 1 of 1</span>
+                </div>
+                <h2 id="detailPageTitle">Collected job example</h2>
+                <p id="detailMeta"></p>
+                <p id="detailFeedback" class="detail-feedback hidden"></p>
+              </div>
+              <button id="deleteButton" class="button danger-quiet" type="button">Delete</button>
+            </header>
+
+            <section id="feedbackOnly" class="feedback-only-card hidden" aria-labelledby="feedbackOnlyTitle">
+              <span class="feedback-only-icon" aria-hidden="true">i</span>
+              <div>
+                <h3 id="feedbackOnlyTitle">Correction saved for diagnostics; no trainable passage</h3>
+                <p>This page-level correction can help evaluate detection, but it cannot be marked Ready or included in a training export. You can keep it for reference or delete it.</p>
+              </div>
+            </section>
+
+            <label id="groupField" class="group-field" for="groupIdInput">
+              <span>
+                <strong>Group ID</strong>
+                <small>Keep examples from the same company, job, or reused template in one group.</small>
+              </span>
+              <input id="groupIdInput" type="text" maxlength="120" autocomplete="off" spellcheck="false">
+            </label>
+
+            <div id="candidateHeading" class="candidate-heading">
+              <div>
+                <h3>Candidate passages</h3>
+                <p>Choose one label for every passage. Select the exact supporting words, or use the full passage for keyboard review.</p>
+              </div>
+              <span id="candidateProgress">0 of 0 complete</span>
+            </div>
+
+            <div id="candidateList" class="candidate-list"></div>
+
+            <footer id="detailActions" class="detail-actions">
+              <p id="validationMessage" role="status"></p>
+              <button id="saveButton" class="button primary" type="button">Save &amp; next</button>
+            </footer>
+          </article>
+        </section>
+      </div>
+
+      <p id="liveStatus" class="sr-only" role="status" aria-live="polite"></p>
+    </main>
+
+    <dialog id="deleteDialog" class="confirm-dialog" aria-labelledby="deleteDialogTitle">
+      <form method="dialog">
+        <span class="dialog-icon danger" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"></path></svg>
+        </span>
+        <h2 id="deleteDialogTitle">Delete this example?</h2>
+        <p>This removes the queue example and its review details. The most recent downloadable export is kept until it is replaced or you clear the queue; compact row IDs and labels stay in history to prevent duplicates.</p>
+        <div class="dialog-actions">
+          <button class="button secondary" value="cancel">Cancel</button>
+          <button id="confirmDeleteButton" class="button danger" value="confirm">Delete example</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="clearDialog" class="confirm-dialog" aria-labelledby="clearDialogTitle">
+      <form method="dialog">
+        <span class="dialog-icon danger" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5"></path></svg>
+        </span>
+        <h2 id="clearDialogTitle">Clear the entire queue?</h2>
+        <p id="clearDialogText">This permanently removes every collected example. Compact export history is kept so later files cannot silently duplicate or contradict earlier exports.</p>
+        <label class="confirm-check">
+          <input id="clearConfirmCheck" type="checkbox">
+          <span>I understand that the queue and latest downloadable copy will be deleted.</span>
+        </label>
+        <div class="dialog-actions">
+          <button class="button secondary" value="cancel">Cancel</button>
+          <button id="confirmClearButton" class="button danger" value="confirm" disabled>Clear queue</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="../lib/collector.js"></script>
+    <script src="collector.js"></script>
+  </body>
+</html>

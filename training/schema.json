@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sponsorlens.local/training-example.schema.json",
+  "title": "SponsorLens local model training example",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "group_id",
+    "text",
+    "label",
+    "evidence",
+    "source",
+    "verified"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 3
+    },
+    "group_id": {
+      "type": "string",
+      "minLength": 3,
+      "description": "Company, job, or template group used to prevent train/test leakage."
+    },
+    "text": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 4000
+    },
+    "label": {
+      "enum": [
+        "irrelevant",
+        "no",
+        "conditional",
+        "yes",
+        "review"
+      ]
+    },
+    "evidence": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "start",
+            "end",
+            "text"
+          ],
+          "properties": {
+            "start": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "end": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "text": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "source": {
+      "type": "string",
+      "minLength": 2
+    },
+    "rule_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "verified": {
+      "type": "boolean"
+    },
+    "split": {
+      "enum": [
+        "train",
+        "validation",
+        "test",
+        "challenge"
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "label": {
+            "const": "irrelevant"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "evidence": {
+            "type": "null"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "evidence": {
+            "type": "object"
+          }
+        }
+      }
+    }
+  ]
+}
+
