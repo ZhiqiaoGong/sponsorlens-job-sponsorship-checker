@@ -196,21 +196,27 @@ test("the scan-anyway message returns a page-wide result", () => {
   assert.equal(published.length, 0);
 });
 
-test("application URLs never produce local training captures", () => {
+test("application URLs are skipped and never produce local training captures", () => {
+  let analyzeCalls = 0;
   const { api, published } = loadContentScript({
-    url: "https://workday.example.com/job/123/apply/contact-information",
+    url: "https://jobs.ashbyhq.com/sentry/5c3196c7-f3d6-4dba-9c41-c886df4b2421/application?embed=true",
     title: "Apply for Software Engineer",
-    text: "Visa sponsorship is not available. Your application. Personal information.",
+    text: [
+      "Software Engineer",
+      "Your application",
+      "Contact information",
+      "Will you require employer sponsorship to continue working in the future?"
+    ].join("\n"),
     collectLocalTrainingSamples: true,
-    disableIndicator: true,
     analyze(_text, meta) {
+      analyzeCalls += 1;
       return {
         version: "test",
-        status: "review",
-        label: "Needs review",
+        status: "conditional",
+        label: "Conditional sponsorship",
         summary: "",
-        color: "#ca8a04",
-        counts: { review: 1 },
+        color: "#d97706",
+        counts: { conditional: 1 },
         evidence: [],
         isLikelyJobPage: true,
         scanMode: "job",
@@ -220,7 +226,11 @@ test("application URLs never produce local training captures", () => {
   });
   const result = api.scanPage(true);
 
-  assert.equal(result.scanMode, "job");
+  assert.equal(analyzeCalls, 0);
+  assert.equal(result.scanMode, "skipped");
+  assert.equal(result.skippedReason, "application-flow");
+  assert.equal(result.status, "unknown");
+  assert.equal(api.state.host, null);
   assert.equal(
     published.some((message) => message.type === "SPONSORLENS_CAPTURE_SAMPLES"),
     false
@@ -228,6 +238,47 @@ test("application URLs never produce local training captures", () => {
   assert.equal(
     published.filter((message) => message.type === "SPONSORLENS_RESULT").length,
     1
+  );
+});
+
+test("an application tab keeps the prior listing verdict without leaving its card open", () => {
+  let analyzeCalls = 0;
+  const { api, published } = loadContentScript({
+    url: "https://jobs.ashbyhq.com/sentry/5c3196c7-f3d6-4dba-9c41-c886df4b2421/application?embed=true",
+    title: "Apply for Software Engineer",
+    text: [
+      "Software Engineer",
+      "Your application",
+      "Contact information",
+      "Will you require employer sponsorship to continue working in the future?"
+    ].join("\n"),
+    analyze() {
+      analyzeCalls += 1;
+      throw new Error("application questionnaire text must not be analyzed");
+    }
+  });
+  const listingResult = {
+    status: "no",
+    label: "No sponsorship",
+    isLikelyJobPage: true,
+    scanMode: "job"
+  };
+  api.state.result = listingResult;
+  api.state.currentJobKey = "url:https://jobs.ashbyhq.com/sentry/5c3196c7-f3d6-4dba-9c41-c886df4b2421";
+  api.state.indicatorExpanded = true;
+  api.state.expansionMode = "auto";
+
+  const result = api.scanPage(true);
+
+  assert.equal(analyzeCalls, 0);
+  assert.equal(result, listingResult);
+  assert.equal(api.state.result, listingResult);
+  assert.equal(api.state.indicatorExpanded, false);
+  assert.equal(api.state.expansionMode, "");
+  assert.equal(api.state.host, null);
+  assert.equal(
+    published.some((message) => message.type === "SPONSORLENS_RESULT"),
+    false
   );
 });
 

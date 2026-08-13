@@ -78,6 +78,54 @@ test("periods inside U.S. abbreviations do not split a candidate", () => {
   assert.equal(candidates[0].text, text);
 });
 
+test("a sponsorship heading keeps the explanatory paragraph that follows it", () => {
+  const text = [
+    "Citizenship Requirements:",
+    "Applicants must be a U.S. citizen or permanent resident.",
+    "Benefits:",
+    "Medical insurance is provided."
+  ].join("\n");
+  const normalized = policy.normalizeText(text);
+  const candidates = policy.extractCandidateWindows(text);
+
+  assert.equal(candidates.length, 1);
+  assert.equal(
+    candidates[0].text,
+    "Citizenship Requirements:\nApplicants must be a U.S. citizen or permanent resident."
+  );
+  assert.equal(
+    normalized.slice(candidates[0].index, candidates[0].end),
+    candidates[0].text
+  );
+  assert.doesNotMatch(candidates[0].text, /Benefits/);
+});
+
+test("a title-style eligibility heading gains context without swallowing the next section", () => {
+  const text = [
+    "Export Control Regulations",
+    "Applicants must be eligible to obtain the required authorization from the U.S. Department of State.",
+    "Benefits",
+    "Medical insurance is provided."
+  ].join("\n");
+  const candidates = policy.extractCandidateWindows(text);
+
+  assert.equal(candidates.length, 1);
+  assert.match(candidates[0].text, /^Export Control Regulations\nApplicants must/i);
+  assert.doesNotMatch(candidates[0].text, /Benefits/);
+  assert.ok(candidates[0].signalSpans.length >= 2);
+});
+
+test("a heading is not joined to another heading when its explanation is absent", () => {
+  const candidates = policy.extractCandidateWindows([
+    "Citizenship Requirements:",
+    "Benefits:",
+    "Medical insurance is provided."
+  ].join("\n"));
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].text, "Citizenship Requirements:");
+});
+
 test("every checked-in model example can pass the runtime candidate gate", () => {
   const examples = fs.readFileSync(
     require.resolve("../training/data/seed.jsonl"),

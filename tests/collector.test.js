@@ -205,6 +205,35 @@ test("page feedback records confirmation and corrections without becoming traini
     source: "automatic"
   });
   assert.equal(cleared.updatedAt, "2026-08-05T10:32:00.000Z");
+  assert.equal(collector.finalPageStatus(cleared), "review");
+});
+
+test("final page status follows corrections and excludes non-job records from training", () => {
+  const reviewed = reviewAll(capture(), "review").item;
+  const excluded = collector.applyPageFeedback(
+    reviewed,
+    { action: "corrected", selectedStatus: "not-job" },
+    "2026-08-05T10:33:00.000Z"
+  );
+
+  assert.equal(collector.finalPageStatus(reviewed), "review");
+  assert.equal(collector.finalPageStatus(excluded), "not-job");
+  assert.equal(collector.isTrainableCapture(excluded), false);
+  assert.equal(excluded.state, "pending");
+  assert.match(
+    collector.validateReview(excluded).errors.join(" "),
+    /not an individual job listing/i
+  );
+  assert.equal(collector.toTrainingRows([excluded]).length, 0);
+
+  const restored = collector.applyPageFeedback(
+    excluded,
+    { action: "clear" },
+    "2026-08-05T10:34:00.000Z"
+  );
+  assert.equal(collector.finalPageStatus(restored), "review");
+  assert.equal(restored.state, "pending");
+  assert.equal(restored.exportedAt, null);
 });
 
 test("silent confirmation is automatic, idempotent, and remains page-level", () => {
@@ -381,7 +410,7 @@ test("rule suggestions retain exact candidate-relative evidence", () => {
   });
 });
 
-test("merging deduplicates candidates and preserves completed human review", () => {
+test("automatic merging leaves completed human reviews byte-for-byte unchanged", () => {
   const original = capture();
   const reviewed = reviewAll(original).item;
   const exported = collector.markExported(reviewed, "2026-08-05T11:00:00.000Z");
@@ -391,12 +420,8 @@ test("merging deduplicates candidates and preserves completed human review", () 
   });
   const merged = collector.mergeCapture(exported, repeat);
 
-  assert.equal(merged.candidates.length, 1);
-  assert.deepEqual(merged.review, exported.review);
-  assert.equal(merged.state, "exported");
-  assert.equal(merged.exportedAt, exported.exportedAt);
-  assert.equal(merged.observationCount, 2);
-  assert.equal(merged.page.title, "Updated");
+  assert.strictEqual(merged, exported);
+  assert.equal(collector.isReviewLocked(exported), true);
 
   const newText = "We can sponsor an H-1B visa for exceptional candidates.";
   const expandedIncoming = capture({
@@ -406,11 +431,10 @@ test("merging deduplicates candidates and preserves completed human review", () 
     ]
   });
   const expanded = collector.mergeCapture(exported, expandedIncoming);
-  assert.equal(expanded.candidates.length, 2);
-  assert.deepEqual(expanded.review, exported.review);
-  assert.equal(expanded.state, "pending");
-  assert.equal(expanded.exportedAt, null);
-  assert.match(collector.validateReview(expanded).errors.join(" "), /choose a label/i);
+  assert.strictEqual(expanded, exported);
+  assert.equal(expanded.candidates.length, 1);
+  assert.equal(expanded.state, "exported");
+  assert.equal(expanded.exportedAt, exported.exportedAt);
 });
 
 test("a pending capture admits stronger passages that load later", () => {
@@ -441,6 +465,24 @@ test("a pending capture admits stronger passages that load later", () => {
     merged.candidates.map((entry) => entry.text),
     [lateText, firstText, secondText]
   );
+  assert.equal(merged.state, "pending");
+});
+
+test("a richer rescan replaces an unreviewed heading-only candidate", () => {
+  const heading = "Citizenship Requirements:";
+  const context = `${heading}\nApplicants must be a U.S. citizen or permanent resident.`;
+  const initial = capture({
+    jobKey: "job:heading-context",
+    candidates: [candidate(heading, 40)]
+  });
+  const rescanned = capture({
+    jobKey: "job:heading-context",
+    candidates: [candidate(context, 40)]
+  });
+
+  const merged = collector.mergeCapture(initial, rescanned);
+  assert.equal(merged.candidates.length, 1);
+  assert.equal(merged.candidates[0].text, context);
   assert.equal(merged.state, "pending");
 });
 

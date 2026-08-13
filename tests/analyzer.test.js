@@ -85,6 +85,80 @@ test("automatic analysis still evaluates an individual job listing", () => {
   assert.ok(result.evidence.length > 0);
 });
 
+test("continuous work authorization without visa sponsorship is unavailable", () => {
+  const result = analyzer.analyze(
+    `
+      2026 Early Career Embedded Software Engineer
+      About the job
+      What You'll Do
+      Build and maintain high-quality embedded software.
+      Qualifications
+      Must have continuous work authorization in the US without the need for
+      visa sponsorships.
+    `,
+    {
+      url: "https://www.linkedin.com/jobs/view/4413763362",
+      title: "2026 Early Career Embedded Software Engineer"
+    },
+    { skipNonJob: true }
+  );
+
+  assert.equal(result.status, "no");
+  assert.equal(result.evidence[0].ruleId, "without_sponsorship_future");
+  assert.equal(result.evidence[0].category, "no");
+  assert.match(
+    result.evidence[0].matchedText,
+    /continuous work authorization[\s\S]+without[\s\S]+visa sponsorships/i
+  );
+});
+
+test("work authorization inside EEO boilerplate does not determine sponsorship", () => {
+  const result = analyzer.analyze(
+    `
+      Junior Software Engineer
+      About the job
+      Required Qualifications
+      A Bachelor's degree in Computer Science or a related discipline.
+
+      MetLife is an Equal Opportunity Employer. All employment decisions are
+      made without regards to race, color, national origin, religion, creed,
+      sex, disability, citizenship status (although applicants and employees
+      must be legally authorized to work in the United States), veteran status,
+      or any other characteristic protected by applicable law.
+    `,
+    {
+      url: "https://www.linkedin.com/jobs/view/4449444067",
+      title: "Junior Software Engineer | MetLife"
+    },
+    { skipNonJob: true }
+  );
+
+  assert.equal(result.status, "unknown");
+  assert.equal(result.evidence.length, 0);
+});
+
+test("a standalone legal work authorization requirement still needs review", () => {
+  const result = analyzer.analyze(
+    `
+      Junior Software Engineer
+      About the job
+      Required Qualifications
+      Applicants must be legally authorized to work in the United States.
+
+      We are an Equal Opportunity Employer. Employment decisions are made
+      without regard to race, color, religion, or national origin.
+    `,
+    {
+      url: "https://www.linkedin.com/jobs/view/5555555555",
+      title: "Junior Software Engineer"
+    },
+    { skipNonJob: true }
+  );
+
+  assert.equal(result.status, "review");
+  assert.equal(result.evidence[0].ruleId, "current_authorization");
+});
+
 test("an embedded board listing is evaluated without the classic headings", () => {
   const result = analyzer.analyze(
     `
@@ -181,6 +255,56 @@ test("bare clearance eligibility language is flagged for review", () => {
   );
 });
 
+test("CPT and OPT eligibility language is related but does not answer sponsorship", () => {
+  const result = analyzer.analyze(
+    `
+      Software Engineer I - Early Career
+      International Student Eligibility (U.S. based roles): F-1 visa students
+      must have approved Curricular Practical Training (CPT) or Occupational
+      Practical Training (OPT) before their assignment begins.
+      CPT/OPT must relate to their degree and be authorized by their university.
+    `,
+    {
+      url: "https://example.com/jobs/early-career-123",
+      title: "Software Engineer I - Early Career"
+    },
+    { skipNonJob: true }
+  );
+
+  assert.equal(result.status, "review");
+  assert.ok(result.evidence.some((item) => {
+    return item.ruleId === "student_work_authorization" &&
+      item.category === "review";
+  }));
+});
+
+test("explicit sponsorship answers outrank CPT and OPT review language", () => {
+  const meta = {
+    url: "https://example.com/jobs/early-career-456",
+    title: "Software Engineer I - Early Career"
+  };
+  const eligibility = "F-1 visa students must have approved CPT or OPT.";
+  const unavailable = analyzer.analyze(
+    `${eligibility} Visa sponsorship is not available for this role.`,
+    meta,
+    { skipNonJob: true }
+  );
+  const available = analyzer.analyze(
+    `${eligibility} H-1B sponsorship is available for this role.`,
+    meta,
+    { skipNonJob: true }
+  );
+
+  assert.equal(unavailable.status, "no");
+  assert.equal(available.status, "yes");
+  assert.ok(unavailable.evidence.some((item) => {
+    return item.ruleId === "student_work_authorization";
+  }));
+  assert.ok(available.evidence.some((item) => {
+    return item.ruleId === "student_work_authorization";
+  }));
+});
+
 test("enumerated ITAR eligibility language is flagged for review", () => {
   const result = analyzer.analyze(
     `
@@ -211,6 +335,37 @@ test("enumerated ITAR eligibility language is flagged for review", () => {
     result.evidence[0].matchedText,
     /export regulations[\s\S]+applicant must be[\s\S]+U\.S\. citizen/i
   );
+});
+
+test("an offer conditioned on export-control authorization needs review", () => {
+  const result = analyzer.analyze(
+    `
+      December 2026 New Graduate Engineer, Software / GNC
+      Disclosures
+      This position may require access to information protected under U.S.
+      export control laws and regulations, including the Export Administration
+      Regulations (EAR) and the International Traffic in Arms Regulations
+      (ITAR). Please note that any offer for employment may be conditioned on
+      authorization to receive software or technology controlled under these
+      U.S. export control laws and regulations without sponsorship for an
+      export license. Mach participates in E-Verify to confirm that you are
+      authorized to work in the U.S.
+    `,
+    {
+      url: "https://jobs.ashbyhq.com/mach/43c8b037-c77d-4efb-9379-52a6c3718bdb",
+      title: "December 2026 New Graduate Engineer, Software / GNC"
+    },
+    { skipNonJob: true }
+  );
+
+  assert.equal(result.status, "review");
+  assert.equal(result.evidence[0].ruleId, "export_authorization_condition");
+  assert.equal(result.evidence[0].category, "review");
+  assert.match(
+    result.evidence[0].matchedText,
+    /offer for employment[\s\S]+conditioned on[\s\S]+export control/i
+  );
+  assert.equal(result.evidence.some((item) => item.category === "no"), false);
 });
 
 test("citizenship or green-card requirements are treated as ineligible for sponsorship", () => {

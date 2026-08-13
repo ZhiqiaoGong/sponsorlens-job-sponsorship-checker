@@ -116,16 +116,46 @@
                 </div>
                 <h2 id="detailPageTitle">Collected job example</h2>
                 <p id="detailMeta"></p>
-                <p id="detailFeedback" class="detail-feedback hidden"></p>
               </div>
               <button id="deleteButton" class="button danger-quiet" type="button">Delete</button>
             </header>
+
+            <section id="pageResultCard" class="page-result-card result-unknown" aria-labelledby="pageResultLabel">
+              <div class="page-result-summary">
+                <span id="pageResultLabel" class="page-result-label">Page result</span>
+                <strong id="finalPageResult">Not mentioned</strong>
+                <p>
+                  <span>Scanner result: <b id="scannerPageResult">Not mentioned</b></span>
+                  <span aria-hidden="true">·</span>
+                  <span>Source: <b id="pageResultSource">Assumed correct</b></span>
+                </p>
+              </div>
+              <div class="page-result-actions">
+                <button id="changePageResultButton" class="button secondary" type="button">Change result</button>
+                <button id="resetPageResultButton" class="button secondary hidden" type="button">Use scanner result</button>
+              </div>
+              <form id="pageResultEditor" class="page-result-editor hidden">
+                <label for="pageResultSelect">Correct final result</label>
+                <div class="page-result-editor-controls">
+                  <select id="pageResultSelect">
+                    <option value="no">No sponsorship</option>
+                    <option value="conditional">Conditional sponsorship</option>
+                    <option value="yes">Sponsorship available</option>
+                    <option value="review">Needs review</option>
+                    <option value="unknown">Not mentioned</option>
+                    <option value="not-job">Not an individual job listing</option>
+                  </select>
+                  <button id="savePageResultButton" class="button primary" type="submit">Save result</button>
+                  <button id="cancelPageResultButton" class="button secondary" type="button">Cancel</button>
+                </div>
+              </form>
+            </section>
 
             <section id="feedbackOnly" class="feedback-only-card hidden" aria-labelledby="feedbackOnlyTitle">
               <span class="feedback-only-icon" aria-hidden="true">i</span>
               <div>
                 <h3 id="feedbackOnlyTitle">Correction saved for diagnostics; no trainable passage</h3>
-                <p>This page-level correction can help evaluate detection, but it cannot be marked Ready or included in a training export. You can keep it for reference or delete it.</p>
+                <p id="feedbackOnlyText">This page-level correction can help evaluate detection, but it cannot be marked Ready or included in a training export. You can keep it for reference or delete it.</p>
               </div>
             </section>
 

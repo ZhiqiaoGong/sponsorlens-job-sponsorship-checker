@@ -738,6 +738,93 @@ test("review-page operations reject messages from ordinary pages", async () => {
   assert.match(response.error, /review page/i);
 });
 
+test("only the Review page can change and restore a stored final page result", async () => {
+  const item = makeReadyCapture(
+    "job:review-page-result",
+    "CPT/OPT eligibility requires review."
+  );
+  const key = collector.storageKey(item.captureId);
+  const { messageListener, localValues } = loadBackground({
+    localValues: { [key]: item }
+  });
+  const ordinaryPage = { tab: { id: 4 }, url: "https://jobs.example.com/opening/4" };
+  const reviewPage = { url: "chrome-extension://test/collector/collector.html" };
+
+  const rejected = await dispatch(
+    messageListener,
+    {
+      type: "SPONSORLENS_COLLECTION_PAGE_RESULT_UPDATE",
+      captureId: item.captureId,
+      action: "corrected",
+      selectedStatus: "not-job"
+    },
+    ordinaryPage
+  );
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /review page/i);
+  assert.deepEqual(localValues[key], item);
+
+  const corrected = await dispatch(
+    messageListener,
+    {
+      type: "SPONSORLENS_COLLECTION_PAGE_RESULT_UPDATE",
+      captureId: item.captureId,
+      action: "corrected",
+      selectedStatus: "not-job"
+    },
+    reviewPage
+  );
+  assert.equal(corrected.ok, true);
+  assert.equal(corrected.finalStatus, "not-job");
+  assert.equal(corrected.item.state, "pending");
+  assert.deepEqual(corrected.item.review, item.review);
+  assert.equal(collector.isTrainableCapture(corrected.item), false);
+
+  const restored = await dispatch(
+    messageListener,
+    {
+      type: "SPONSORLENS_COLLECTION_PAGE_RESULT_UPDATE",
+      captureId: item.captureId,
+      action: "clear"
+    },
+    reviewPage
+  );
+  assert.equal(restored.ok, true);
+  assert.equal(restored.finalStatus, "review");
+  assert.equal(restored.item.pageFeedback.source, "automatic");
+  assert.equal(restored.item.state, "pending");
+  assert.deepEqual(restored.item.review, item.review);
+});
+
+test("automatic rescans cannot modify a completed review", async () => {
+  const reviewed = makeReadyCapture(
+    "job:locked-review",
+    "Visa sponsorship details require review."
+  );
+  const key = collector.storageKey(reviewed.captureId);
+  const original = structuredClone(reviewed);
+  const { messageListener, localValues } = loadBackground({
+    localValues: {
+      [collector.SETTING_KEY]: true,
+      [key]: reviewed
+    }
+  });
+  const changed = makeCapture(
+    "job:locked-review",
+    "Visa sponsorship is explicitly available for this revised page."
+  );
+  const response = await dispatch(
+    messageListener,
+    { type: "SPONSORLENS_CAPTURE_SAMPLES", capture: changed },
+    { tab: { id: 8 }, url: "https://jobs.example.com/opening/locked" }
+  );
+
+  assert.equal(response.ok, true);
+  assert.equal(response.locked, true);
+  assert.equal(response.updated, 0);
+  assert.deepEqual(localValues[key], original);
+});
+
 test("collector clear removes only collector-owned local keys", async () => {
   const first = makeCapture("job:clear:1", "Visa sponsorship is unavailable.");
   const second = makeCapture("job:clear:2", "Visa sponsorship may be available.");

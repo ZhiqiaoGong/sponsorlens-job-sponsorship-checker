@@ -68,8 +68,19 @@
     detailPosition: document.getElementById("detailPosition"),
     detailPageTitle: document.getElementById("detailPageTitle"),
     detailMeta: document.getElementById("detailMeta"),
-    detailFeedback: document.getElementById("detailFeedback"),
+    pageResultCard: document.getElementById("pageResultCard"),
+    finalPageResult: document.getElementById("finalPageResult"),
+    scannerPageResult: document.getElementById("scannerPageResult"),
+    pageResultSource: document.getElementById("pageResultSource"),
+    changePageResultButton: document.getElementById("changePageResultButton"),
+    resetPageResultButton: document.getElementById("resetPageResultButton"),
+    pageResultEditor: document.getElementById("pageResultEditor"),
+    pageResultSelect: document.getElementById("pageResultSelect"),
+    savePageResultButton: document.getElementById("savePageResultButton"),
+    cancelPageResultButton: document.getElementById("cancelPageResultButton"),
     feedbackOnly: document.getElementById("feedbackOnly"),
+    feedbackOnlyTitle: document.getElementById("feedbackOnlyTitle"),
+    feedbackOnlyText: document.getElementById("feedbackOnlyText"),
     groupField: document.getElementById("groupField"),
     groupIdInput: document.getElementById("groupIdInput"),
     candidateHeading: document.getElementById("candidateHeading"),
@@ -101,6 +112,7 @@
     dirtyIds: new Set(),
     saveAttemptedIds: new Set(),
     pendingDeleteId: null,
+    editingPageResultId: null,
     busy: false,
     loaded: false,
     noticeTimer: null,
@@ -118,6 +130,10 @@
 
   function candidatesOf(item) {
     return Array.isArray(item && item.candidates) ? item.candidates : [];
+  }
+
+  function hasCandidatePassages(item) {
+    return candidatesOf(item).length > 0;
   }
 
   function pageFeedbackOf(item) {
@@ -138,7 +154,10 @@
   }
 
   function isTrainable(item) {
-    return candidatesOf(item).length > 0;
+    if (collector && typeof collector.isTrainableCapture === "function") {
+      return collector.isTrainableCapture(item);
+    }
+    return hasCandidatePassages(item) && finalPageStatus(item) !== "not-job";
   }
 
   function feedbackPriority(item) {
@@ -274,6 +293,11 @@
     elements.saveButton.disabled = state.busy || !state.selectedId || !canReview;
     elements.deleteButton.disabled = state.busy || !state.selectedId;
     elements.groupIdInput.disabled = state.busy || !canReview;
+    elements.changePageResultButton.disabled = state.busy || !state.selectedId;
+    elements.resetPageResultButton.disabled = state.busy || !state.selectedId;
+    elements.pageResultSelect.disabled = state.busy || !state.selectedId;
+    elements.savePageResultButton.disabled = state.busy || !state.selectedId;
+    elements.cancelPageResultButton.disabled = state.busy || !state.selectedId;
   }
 
   function createDraft(item) {
@@ -357,20 +381,34 @@
     return names[normalized] || sentenceCase(normalized);
   }
 
-  function feedbackSummary(item) {
+  function scannerPageStatus(item) {
+    const value = item && item.baseResult && item.baseResult.status;
+    return String(value || "unknown").trim().toLowerCase().replace(/_/g, "-");
+  }
+
+  function finalPageStatus(item) {
+    if (collector && typeof collector.finalPageStatus === "function") {
+      return collector.finalPageStatus(item);
+    }
     const feedback = pageFeedbackOf(item);
-    if (feedback.action === "confirmed") {
-      return feedback.source === "indicator"
-        ? "Page result: Confirmed manually"
-        : "Page result: Assumed correct";
-    }
+    return feedback.action === "none"
+      ? scannerPageStatus(item)
+      : feedback.selectedStatus || scannerPageStatus(item);
+  }
+
+  function pageResultProvenance(item, short) {
+    const feedback = pageFeedbackOf(item);
     if (feedback.action === "corrected") {
-      const selected = resultStatusName(feedback.selectedStatus);
-      return selected
-        ? `Page result: Corrected to ${selected}`
-        : "Page result: Corrected";
+      return short ? "Corrected" : "Corrected by you";
     }
-    return "Page result: Assumed correct";
+    if (feedback.action === "confirmed" && feedback.source === "indicator") {
+      return short ? "Confirmed" : "Confirmed by you";
+    }
+    return short ? "Assumed" : "Assumed correct";
+  }
+
+  function feedbackSummary(item) {
+    return `Final result: ${resultStatusName(finalPageStatus(item))} · ${pageResultProvenance(item, true)}`;
   }
 
   function itemTitle(item) {
@@ -385,7 +423,10 @@
   }
 
   function queueSnippet(item) {
-    if (!isTrainable(item)) {
+    if (finalPageStatus(item) === "not-job") {
+      return "Excluded because this is not an individual job listing.";
+    }
+    if (!hasCandidatePassages(item)) {
       return "Correction saved for diagnostics; no trainable passage.";
     }
     const candidate = candidatesOf(item)[0];
@@ -469,7 +510,8 @@
       feedback.className = [
         "queue-item-feedback",
         feedbackValue.action,
-        feedbackValue.source
+        feedbackValue.source,
+        `result-${finalPageStatus(item)}`
       ].filter(Boolean).join(" ");
       feedback.textContent = feedbackText;
       feedback.classList.toggle("hidden", !feedbackText);
@@ -487,6 +529,7 @@
       button.append(top, snippet, feedback, meta);
       button.addEventListener("click", () => {
         state.selectedId = id;
+        state.editingPageResultId = null;
         state.saveAttemptedIds.delete(id);
         renderQueue();
         renderDetail();
@@ -821,6 +864,7 @@
     const position = filteredItems().findIndex((entry) => captureId(entry) === captureId(item));
     const draft = draftFor(item);
     const trainable = isTrainable(item);
+    const hasPassages = hasCandidatePassages(item);
     elements.detailStatus.className = `status-pill ${value}`;
     elements.detailStatus.textContent = statusName(value);
     elements.detailPosition.textContent = `Example ${position + 1} of ${filteredItems().length}`;
@@ -828,22 +872,33 @@
     const details = [
       itemOrigin(item),
       formatDate(item.capturedAt),
-      sentenceCase(item.sampleReason),
-      item.baseResult && item.baseResult.status
-        ? `Base result: ${sentenceCase(item.baseResult.status)}`
-        : ""
+      sentenceCase(item.sampleReason)
     ].filter(Boolean);
     elements.detailMeta.textContent = details.join(" · ");
-    const feedbackText = feedbackSummary(item);
     const feedbackValue = pageFeedbackOf(item);
-    elements.detailFeedback.textContent = feedbackText;
-    elements.detailFeedback.className = [
-      "detail-feedback",
-      feedbackValue.action,
-      feedbackValue.source
-    ].filter(Boolean).join(" ");
-    elements.detailFeedback.classList.toggle("hidden", !feedbackText);
+    const finalStatus = finalPageStatus(item);
+    elements.pageResultCard.className = `page-result-card result-${finalStatus}`;
+    elements.finalPageResult.textContent = resultStatusName(finalStatus);
+    elements.scannerPageResult.textContent = resultStatusName(scannerPageStatus(item));
+    elements.pageResultSource.textContent = pageResultProvenance(item, false);
+    elements.resetPageResultButton.classList.toggle(
+      "hidden",
+      feedbackValue.action !== "corrected"
+    );
+    const editingPageResult = state.editingPageResultId === captureId(item);
+    elements.pageResultEditor.classList.toggle("hidden", !editingPageResult);
+    elements.changePageResultButton.classList.toggle("hidden", editingPageResult);
+    if (editingPageResult) elements.pageResultSelect.value = finalStatus;
     elements.feedbackOnly.classList.toggle("hidden", trainable);
+    if (finalStatus === "not-job") {
+      elements.feedbackOnlyTitle.textContent = "Excluded from training export";
+      elements.feedbackOnlyText.textContent = hasPassages
+        ? "This record is marked as not an individual job listing. Its passages are kept for diagnostics, but it cannot be marked Ready or exported. Use Change result if this was a real job listing."
+        : "This record is marked as not an individual job listing and has no trainable passage. You can keep it for diagnostics or delete it.";
+    } else {
+      elements.feedbackOnlyTitle.textContent = "Correction saved for diagnostics; no trainable passage";
+      elements.feedbackOnlyText.textContent = "This page-level correction can help evaluate detection, but it cannot be marked Ready or included in a training export. You can keep it for reference or delete it.";
+    }
     elements.groupField.classList.toggle("hidden", !trainable);
     elements.candidateHeading.classList.toggle("hidden", !trainable);
     elements.candidateList.classList.toggle("hidden", !trainable);
@@ -994,6 +1049,43 @@
       candidates: candidateReviews,
       reviewedAt: null
     };
+  }
+
+  async function updateCurrentPageResult(action, selectedStatus) {
+    const item = currentItem();
+    if (!item || state.busy) return;
+    const id = captureId(item);
+    setBusy(true);
+    elements.savePageResultButton.textContent = "Saving…";
+    try {
+      const response = await runtimeMessage({
+        type: "SPONSORLENS_COLLECTION_PAGE_RESULT_UPDATE",
+        captureId: id,
+        action,
+        ...(action === "corrected" ? { selectedStatus } : {})
+      });
+      if (!response.item || captureId(response.item) !== id) {
+        throw new Error("SponsorLens returned an invalid updated example.");
+      }
+      const index = state.items.findIndex((entry) => captureId(entry) === id);
+      if (index >= 0) state.items[index] = response.item;
+      state.editingPageResultId = null;
+      state.saveAttemptedIds.delete(id);
+      renderAll();
+      const finalName = resultStatusName(finalPageStatus(response.item));
+      setNotice(
+        action === "clear"
+          ? `Final result restored to the scanner result: ${finalName}.`
+          : `Final result changed to ${finalName}. Existing passage labels were kept; save the review again before export.`,
+        "success",
+        4200
+      );
+    } catch (error) {
+      setNotice(error && error.message || "The page result could not be updated.", "error");
+    } finally {
+      elements.savePageResultButton.textContent = "Save result";
+      setBusy(false);
+    }
   }
 
   async function saveCurrent() {
@@ -1214,6 +1306,7 @@
       state.drafts.delete(id);
       state.dirtyIds.delete(id);
       state.saveAttemptedIds.delete(id);
+      if (state.editingPageResultId === id) state.editingPageResultId = null;
       state.selectedId = nextId;
       await loadQueue({ preferredId: nextId });
       setNotice("Example deleted from this device.", "success", 2800);
@@ -1236,6 +1329,7 @@
       state.drafts.clear();
       state.dirtyIds.clear();
       state.saveAttemptedIds.clear();
+      state.editingPageResultId = null;
       renderAll();
       setNotice(
         hadLastExport
@@ -1269,6 +1363,25 @@
   });
 
   elements.saveButton.addEventListener("click", saveCurrent);
+  elements.changePageResultButton.addEventListener("click", () => {
+    const item = currentItem();
+    if (!item || state.busy) return;
+    state.editingPageResultId = captureId(item);
+    elements.pageResultSelect.value = finalPageStatus(item);
+    renderDetail();
+    elements.pageResultSelect.focus();
+  });
+  elements.cancelPageResultButton.addEventListener("click", () => {
+    state.editingPageResultId = null;
+    renderDetail();
+  });
+  elements.pageResultEditor.addEventListener("submit", (event) => {
+    event.preventDefault();
+    updateCurrentPageResult("corrected", elements.pageResultSelect.value);
+  });
+  elements.resetPageResultButton.addEventListener("click", () => {
+    updateCurrentPageResult("clear");
+  });
   elements.exportButton.addEventListener("click", exportReady);
   elements.lastExportButton.addEventListener("click", downloadLastExport);
   elements.deleteButton.addEventListener("click", () => {

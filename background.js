@@ -322,6 +322,20 @@ async function saveCapture(capture) {
   const key = collector.storageKey(capture.captureId);
   const existingValues = await localGet(key);
   const existing = existingValues[key];
+  if (existing && collector.isReviewLocked(existing)) {
+    return {
+      ok: true,
+      added: 0,
+      updated: 0,
+      duplicate: 1,
+      locked: true,
+      captureId: existing.captureId,
+      pageFeedback: collector.normalizePageFeedback(
+        existing.pageFeedback,
+        existing.baseResult && existing.baseResult.status
+      )
+    };
+  }
   if (existing && existing.pageFingerprintHash === capture.pageFingerprintHash) {
     const normalizedExisting = collector.applyAutomaticPageConfirmation(
       collector.normalizeStoredCapture(existing)
@@ -542,6 +556,28 @@ async function updateCapture(captureId, review) {
   };
 }
 
+async function updatePageResult(captureId, action, selectedStatus) {
+  const key = collector.storageKey(captureId);
+  if (!key) return { ok: false, error: "Capture not found." };
+  const values = await localGet(key);
+  const current = values[key];
+  if (!current) return { ok: false, error: "Capture not found." };
+  if (!["clear", "corrected"].includes(action)) {
+    return { ok: false, error: "Choose a valid page-result action." };
+  }
+  const feedback = action === "clear"
+    ? { action: "clear" }
+    : { action: "corrected", selectedStatus };
+  const item = collector.applyPageFeedback(current, feedback);
+  await localSet({ [key]: item });
+  return {
+    ok: true,
+    item,
+    finalStatus: collector.finalPageStatus(item),
+    pageFeedback: item.pageFeedback
+  };
+}
+
 async function deleteCapture(captureId) {
   const key = collector.storageKey(captureId);
   if (!key) return { ok: false, error: "Capture not found." };
@@ -708,6 +744,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     "SPONSORLENS_COLLECTION_LIST",
     "SPONSORLENS_COLLECTION_GET_LAST_EXPORT",
     "SPONSORLENS_COLLECTION_UPDATE",
+    "SPONSORLENS_COLLECTION_PAGE_RESULT_UPDATE",
     "SPONSORLENS_COLLECTION_DELETE",
     "SPONSORLENS_COLLECTION_CLEAR",
     "SPONSORLENS_COLLECTION_MARK_EXPORTED"
@@ -729,6 +766,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       serializeCollectionMutation(() => updateCapture(
         message.captureId,
         message.review
+      )),
+      sendResponse
+    );
+  }
+  if (message.type === "SPONSORLENS_COLLECTION_PAGE_RESULT_UPDATE") {
+    return respondAsync(
+      serializeCollectionMutation(() => updatePageResult(
+        message.captureId,
+        message.action,
+        message.selectedStatus
       )),
       sendResponse
     );

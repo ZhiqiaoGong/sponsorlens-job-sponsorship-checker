@@ -550,6 +550,31 @@
       (strongSignals >= 1 && applicationFieldCount >= 2);
   }
 
+  function makeApplicationFlowResult(text) {
+    const unknown = analyzer.STATUS && analyzer.STATUS.unknown || {};
+    return {
+      version: analyzer.VERSION || "unknown",
+      status: "unknown",
+      label: unknown.label || "Not mentioned",
+      shortLabel: unknown.shortLabel || "?",
+      summary: unknown.summary || "No clear sponsorship information was found on this page.",
+      color: unknown.color || "#64748b",
+      evidence: [],
+      counts: { no: 0, conditional: 0, yes: 0, review: 0 },
+      textLength: analyzer.normalizeText(text).length,
+      truncated: false,
+      isLikelyJobPage: false,
+      jobLikelihoodScore: 0,
+      scanMode: "skipped",
+      skippedReason: "application-flow",
+      page: {
+        url: String(location.href || ""),
+        title: String(document.title || "")
+      },
+      detectedAt: Date.now()
+    };
+  }
+
   function shouldRenderIndicator(result) {
     if (!state.settings.pageIndicator || state.indicatorDismissed) return false;
     if (!result.isLikelyJobPage || result.scanMode !== "job") return false;
@@ -2423,6 +2448,33 @@
     }
     state.lastTextFingerprint = nextFingerprint;
     const pageWide = Boolean(options && options.pageWide);
+
+    if (!pageWide && isApplicationFlow(text)) {
+      const applicationJobKey = getJobIdentity(text);
+      const canKeepListingResult = Boolean(
+        state.result &&
+        state.result.isLikelyJobPage &&
+        state.result.scanMode === "job" &&
+        state.currentJobKey &&
+        applicationJobKey === state.currentJobKey
+      );
+
+      restoreHighlight();
+      removeHost();
+      state.collectionContext = null;
+      state.feedbackMenuOpen = false;
+      state.currentJobKey = applicationJobKey;
+
+      // SPA job boards often keep the same document alive while moving from the
+      // listing to an application tab. Keep the listing verdict, but never let
+      // applicant questionnaire wording replace it or reopen the page card.
+      if (canKeepListingResult) return state.result;
+
+      const result = makeApplicationFlowResult(text);
+      state.result = result;
+      publishResult(result);
+      return result;
+    }
 
     const result = analyzer.analyze(
       text,

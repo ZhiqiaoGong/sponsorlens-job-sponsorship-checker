@@ -46,7 +46,7 @@ set.
 
 ## Collecting reviewed examples
 
-SponsorLens 0.4.0 can build a local review queue without uploading browsing
+SponsorLens 0.4.1 can build a local review queue without uploading browsing
 data:
 
 1. Open **SponsorLens Settings** and enable **Save job-language samples on this
@@ -55,16 +55,20 @@ data:
    observation and stores at most three short candidate passages per job. For
    each saved observation, an unchanged page result is recorded as assumed
    correct; use **Wrong result?** on the page whenever the scanner is wrong.
-3. Open **Review observations** from Settings. Label every passage, select exact
-   evidence (or use the full passage), and save it. Page-level feedback without
-   a candidate passage is kept for diagnostics but cannot become training data.
+3. Open **Review observations** from Settings. The page-result card shows both
+   the scanner result and the final result; use **Change result** when needed.
+   Label every passage, select exact evidence (or use the full passage), and
+   save it. Page-level feedback without a candidate passage is kept for
+   diagnostics but cannot become training data.
 4. Choose **Export ready** to download a JSONL file. Pending suggestions are
    never exported as verified examples, and export does not delete local data.
 
 The collector excludes non-job pages, manual page-wide scans, application
 flows, full page text, raw tracking URLs, and passages containing email
-addresses or phone numbers. Repeated scans of the same job are merged. The
-queue is capped at 500 jobs and never evicts an existing sample automatically.
+addresses or phone numbers. Repeated scans of the same job are merged until a
+human review is completed. Completed reviews are then locked against automatic
+rescans; an explicit Review-page edit is required to move them back to Pending.
+The queue is capped at 500 jobs and never evicts an existing sample automatically.
 It also keeps a compact local export ledger containing only deterministic row
 IDs, labels, and timestamps. This prevents later batches from duplicating or
 contradicting earlier exports even after queue entries are edited or deleted.

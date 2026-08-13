@@ -22,7 +22,7 @@ On a job listing, the extension briefly opens the first clear result and then co
 
 ## Privacy
 
-SponsorLens 0.4.0 has no server and does not call external AI services. Page text is analyzed only in the current browser tab and is never uploaded.
+SponsorLens 0.4.1 has no server and does not call external AI services. Page text is analyzed only in the current browser tab and is never uploaded.
 
 The optional local data collection setting is off by default. When enabled, it
 keeps eligible short sponsorship-related passages in `chrome.storage.local` as
@@ -83,8 +83,10 @@ is for pipeline tests only, so no model is enabled in the extension yet. See
 
 The local collection pipeline is implemented in `lib/collector.js`,
 `background.js`, and `collector/`. It stores at most 500 job captures, merges
-repeat scans, requires exact evidence for reviewed labels, and exports only
-human-reviewed examples that match the training schema. A compact device-local
+repeat scans until a human review is completed, requires exact evidence for
+reviewed labels, and exports only human-reviewed examples that match the
+training schema. Completed reviews are locked against automatic rescans; only
+an explicit edit on the Review page can move one back to Pending. A compact device-local
 ledger stores only exported row IDs, labels, and timestamps so later exports
 cannot silently duplicate or contradict earlier files; deleting queue items
 does not erase that history. The Review page also keeps one recoverable local
