@@ -23,6 +23,9 @@
   const HOST_ID = "sponsorlens-root-v1";
   const HIGHLIGHT_ID = "sponsorlens-highlight-v1";
   const AUTO_COLLAPSE_DELAY = 4800;
+  // How recently a wheel or touch drag must have happened for a scroll event to
+  // count as the user scrolling rather than the page scrolling itself.
+  const SCROLL_INTENT_WINDOW = 500;
   const RESUME_COLLAPSE_DELAY = 2400;
   const SESSION_PRESENTED_KEY = "__sponsorlens_presented_jobs_v1";
   const LOCATOR_MAX_ANCESTOR_DEPTH = 8;
@@ -98,7 +101,12 @@
     host: null,
     shadow: null,
     scanTimer: null,
+    scanDeadline: 0,
+    lastScrollIntentAt: 0,
     observer: null,
+    linkedInPendingSince: 0,
+    watchedHref: "",
+    navigationTimer: null,
     lastTextFingerprint: "",
     highlightedElement: null,
     highlightOverlay: null,
@@ -164,30 +172,79 @@
     return match ? match[1] : "";
   }
 
+  // The job the URL is currently pointing at, from either a /jobs/view/ path or
+  // the currentJobId parameter the search page rewrites on every card click.
+  function linkedInUrlJobId() {
+    let url;
+    try {
+      url = new URL(location.href);
+    } catch (_error) {
+      return "";
+    }
+    const pathJobId = linkedInJobIdFromValue(decodeURIComponent(url.pathname));
+    if (pathJobId) return pathJobId;
+    for (const [name, value] of url.searchParams.entries()) {
+      if (name.toLowerCase() !== "currentjobid") continue;
+      const trimmed = String(value || "").trim();
+      if (/^\d{5,}$/.test(trimmed)) return trimmed;
+    }
+    return "";
+  }
+
   // LinkedIn's server-driven job pane rotates every CSS class name, but keeps
   // component ids such as JobDetails_AboutTheJob_4449138344, which carry the job
-  // identifier the section was rendered for.
+  // identifier the section was rendered for. The same value is mirrored on a
+  // componentkey attribute, which survives ids being dropped from the markup.
   const LINKEDIN_SECTION_ID_PATTERN = /^JobDetails_.+_(\d{5,})$/;
+  const LINKEDIN_SECTION_SELECTOR =
+    '[id^="JobDetails_"], [componentkey^="JobDetails_"]';
+  const LINKEDIN_MIN_PANE_TEXT = 80;
+  // How long a LinkedIn detail pane may stay empty before the scanner gives up
+  // waiting and reads the document instead. Expired or region-blocked listings
+  // never fill in, and they should still get a verdict eventually.
+  const LINKEDIN_PENDING_TIMEOUT = 25000;
+  const LINKEDIN_PENDING_RETRY = 400;
+  const SCAN_MAX_WAIT = 2500;
+  const NAVIGATION_POLL_INTERVAL = 500;
+  const NAVIGATION_SCAN_DELAY = 350;
 
+  function linkedInSectionJobId(element) {
+    if (!element) return "";
+    const keys = [
+      String(element.id || ""),
+      typeof element.getAttribute === "function"
+        ? String(element.getAttribute("componentkey") || "")
+        : ""
+    ];
+    for (const key of keys) {
+      const parsed = LINKEDIN_SECTION_ID_PATTERN.exec(key);
+      if (parsed) return parsed[1];
+    }
+    return "";
+  }
+
+  // Sections are kept even while empty: the pane renders as a skeleton for
+  // several seconds, and during that window the id is the only trustworthy
+  // statement of which listing the page is about.
   function linkedInDetailSections() {
     if (!isLinkedInPage() || typeof document.querySelectorAll !== "function") {
       return [];
     }
     let matches = [];
     try {
-      matches = Array.from(document.querySelectorAll('[id^="JobDetails_"]') || []);
+      matches = Array.from(
+        document.querySelectorAll(LINKEDIN_SECTION_SELECTOR) || []
+      );
     } catch (_error) {
       matches = [];
     }
     const sections = [];
+    const seen = new Set();
     matches.forEach((element) => {
-      const parsed = LINKEDIN_SECTION_ID_PATTERN.exec(
-        String(element && element.id || "")
-      );
-      if (!parsed) return;
-      const text = elementText(element);
-      if (!text) return;
-      sections.push({ element, jobId: parsed[1], text });
+      const jobId = linkedInSectionJobId(element);
+      if (!jobId || seen.has(element)) return;
+      seen.add(element);
+      sections.push({ element, jobId, text: elementText(element) });
     });
     // An outer section already contains the text of anything nested inside it.
     return sections.filter((section) => {
@@ -208,8 +265,12 @@
       group.length += section.text.length;
       groups.set(section.jobId, group);
     });
+    if (!groups.size) return null;
     // Sections from the previously opened job can linger through a transition,
-    // so the largest group is the pane currently on screen.
+    // and the lingering one still holds text while the incoming one is an empty
+    // skeleton, so the URL decides which pane is current whenever it names one.
+    const urlJobId = linkedInUrlJobId();
+    if (urlJobId && groups.has(urlJobId)) return groups.get(urlJobId);
     return Array.from(groups.values())
       .sort((left, right) => right.length - left.length)[0] || null;
   }
@@ -303,31 +364,88 @@
     if (!isLinkedInPage()) return null;
     const group = linkedInDetailGroup();
     if (group) {
+      const text = group.sections
+        .map((section) => section.text)
+        .filter(Boolean)
+        .join("\n");
       const primary = group.sections
         .slice()
         .sort((left, right) => right.text.length - left.text.length)[0];
       return {
-        root: primary.element,
-        text: group.sections.map((section) => section.text).join("\n"),
+        root: text ? primary.element : null,
+        text,
         activeJobId: group.jobId,
-        activeJobIdFromDetail: true
+        activeJobIdFromDetail: Boolean(text),
+        // The pane component is mounted, so it owns the description outright.
+        // Briefly during a switch the outgoing listing's text can still be in
+        // the document while the incoming pane is an empty skeleton, and
+        // reading the document there would label the new job from the old one.
+        pending: text.length < LINKEDIN_MIN_PANE_TEXT
       };
     }
     const root = linkedInDetailRoot();
     const active = linkedInActiveJobId(root);
+    const text = elementText(root);
     return {
       root,
-      text: elementText(root),
+      text,
       activeJobId: active.id,
-      activeJobIdFromDetail: Boolean(root) && active.fromDetailRoot
+      activeJobIdFromDetail: Boolean(root) && active.fromDetailRoot,
+      pending: text.length < LINKEDIN_MIN_PANE_TEXT &&
+        Boolean(linkedInUrlJobId()) &&
+        !documentHasJobDescription()
     };
   }
 
-  function getPageText() {
+  // The headings every job description carries. Without pane markup they are
+  // what separates an older LinkedIn layout, whose whole document is the
+  // listing, from a new one that has not mounted its detail component yet — a
+  // search page reads as the result list beside the pane, and a /jobs/view/
+  // page as bare navigation chrome.
+  const JOB_DESCRIPTION_SIGNAL =
+    /\b(?:about (?:the|this) (?:job|role|position|opportunity)|job description|responsibilities|qualifications|what you(?:'|’)?(?:ll| will) (?:be doing|do)|who you are)\b/i;
+
+  function documentHasJobDescription() {
+    const text = document.body &&
+      (document.body.innerText || document.body.textContent) || "";
+    return JOB_DESCRIPTION_SIGNAL.test(text.slice(0, 120000));
+  }
+
+  // A LinkedIn job page whose pane has not rendered holds no job description at
+  // all: the search page's document text is the result list beside it and a
+  // /jobs/view/ document is bare navigation chrome. Analysing either produces a
+  // confident verdict about the wrong text, so the scan waits instead.
+  function isLinkedInPanePending(snapshot) {
+    if (!snapshot || !snapshot.pending) {
+      state.linkedInPendingSince = 0;
+      return false;
+    }
+    const now = Date.now();
+    // A hidden tab is not rendering the pane at all, so time spent there must
+    // not count against the timeout — otherwise a job opened in a background
+    // tab exhausts its wait before anyone looks at it.
+    if (document.visibilityState === "hidden") {
+      state.linkedInPendingSince = now;
+      return true;
+    }
+    if (!state.linkedInPendingSince) state.linkedInPendingSince = now;
+    return now - state.linkedInPendingSince < LINKEDIN_PENDING_TIMEOUT;
+  }
+
+  function getPageText(options) {
     if (!document.body) return "";
     const linkedInSnapshot = getLinkedInSnapshot();
-    if (linkedInSnapshot && linkedInSnapshot.text.length >= 80) {
+    if (
+      linkedInSnapshot &&
+      linkedInSnapshot.text.length >= LINKEDIN_MIN_PANE_TEXT
+    ) {
+      state.linkedInPendingSince = 0;
       return linkedInSnapshot.text;
+    }
+    // A manual page-wide scan is the escape hatch for exactly the pages this
+    // gate holds back, so it always reads the document.
+    if (!(options && options.ignorePending) && isLinkedInPanePending(linkedInSnapshot)) {
+      return "";
     }
     return document.body.innerText || document.body.textContent || "";
   }
@@ -681,7 +799,16 @@
 
   function maybeAutoPresent(result, text, forceReveal) {
     const jobKey = getJobIdentity(text);
+    const previousJobKey = state.currentJobKey;
     state.currentJobKey = jobKey;
+
+    // "Hide on this page" means this listing. A single-page job board keeps one
+    // document across dozens of listings, so the dismissal ends with the
+    // listing it was made on; turning the indicator off everywhere is what the
+    // options page is for.
+    if (previousJobKey && jobKey && previousJobKey !== jobKey) {
+      state.indicatorDismissed = false;
+    }
 
     if (forceReveal) {
       state.indicatorDismissed = false;
@@ -2191,10 +2318,7 @@
       jobKey,
       reason,
       page: { url: location.href, title: document.title },
-      extensionVersion:
-        typeof chrome.runtime.getManifest === "function"
-          ? chrome.runtime.getManifest().version
-          : "unknown",
+      extensionVersion: extensionVersion(),
       candidateExtractorVersion: localModelPolicy.VERSION
     });
   }
@@ -2430,10 +2554,57 @@
     }
   }
 
+  // Reloading or updating the extension leaves this script running on pages
+  // that were already open, with every chrome.* call dead. A single-page job
+  // board never reloads its document, so the orphan would sit there for hours
+  // showing a frozen verdict that looks live. It shuts itself down instead, and
+  // the indicator disappearing is the signal to reload the page.
+  function isExtensionContextAlive() {
+    try {
+      return Boolean(chrome.runtime && chrome.runtime.id);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  // chrome.runtime itself is gone on an orphaned page, so reading through it
+  // unguarded throws rather than returning a fallback.
+  function extensionVersion() {
+    try {
+      return chrome.runtime.getManifest().version;
+    } catch (_error) {
+      return "unknown";
+    }
+  }
+
+  function shutdown() {
+    clearTimeout(state.scanTimer);
+    clearInterval(state.navigationTimer);
+    if (state.observer) state.observer.disconnect();
+    state.observer = null;
+    restoreHighlight();
+    removeHost();
+  }
+
   function scanPage(force, options) {
     clearTimeout(state.scanTimer);
-    const text = getPageText();
-    if (!text.trim()) return null;
+    state.scanDeadline = 0;
+    if (!isExtensionContextAlive()) {
+      shutdown();
+      return null;
+    }
+    const pageWide = Boolean(options && options.pageWide);
+    const text = getPageText({ ignorePending: pageWide });
+    // An empty read means the page has nothing to judge yet — on LinkedIn that
+    // is the skeleton window. Keep the previous verdict and try again later
+    // rather than labelling the listing from whatever else is in the document.
+    if (!text.trim()) {
+      // A hidden tab is woken by the visibility listener instead of polling.
+      if (state.linkedInPendingSince && document.visibilityState !== "hidden") {
+        scheduleScan(LINKEDIN_PENDING_RETRY);
+      }
+      return null;
+    }
     const nextFingerprint = fingerprint(text);
     if (!force && nextFingerprint === state.lastTextFingerprint) return state.result;
     if (
@@ -2447,7 +2618,6 @@
       return state.result;
     }
     state.lastTextFingerprint = nextFingerprint;
-    const pageWide = Boolean(options && options.pageWide);
 
     if (!pageWide && isApplicationFlow(text)) {
       const applicationJobKey = getJobIdentity(text);
@@ -2503,15 +2673,71 @@
     ) {
       restoreHighlight();
     }
-    maybeCollectTrainingSamples(text, result);
+    // Training collection is auxiliary. It runs first only so the card can show
+    // its feedback controls on the first paint, and it must never be able to
+    // stop the verdict itself from being drawn — an extension reload mid-scan
+    // makes every chrome.* call in there throw.
+    try {
+      maybeCollectTrainingSamples(text, result);
+    } catch (_error) {
+      state.collectionContext = null;
+      state.feedbackMenuOpen = false;
+      if (!isExtensionContextAlive()) {
+        shutdown();
+        return result;
+      }
+    }
     renderIndicator(result);
     publishResult(result);
     return result;
   }
 
+  // Debounced, but with a ceiling: a page that mutates faster than the debounce
+  // window would otherwise reset the timer forever and never get scanned.
   function scheduleScan(delay) {
+    const wait = typeof delay === "number" ? delay : 850;
+    const now = Date.now();
+    if (!state.scanDeadline) state.scanDeadline = now + SCAN_MAX_WAIT;
     clearTimeout(state.scanTimer);
-    state.scanTimer = setTimeout(() => scanPage(false), delay || 850);
+    state.scanTimer = setTimeout(
+      () => scanPage(false),
+      Math.max(0, Math.min(wait, state.scanDeadline - now))
+    );
+  }
+
+  // LinkedIn swaps job panes through history.pushState, which fires no event a
+  // content script can see: the isolated world holds its own history object, so
+  // patching pushState there never observes the page's own calls. Watching the
+  // URL is the only reading that works from here.
+  function handleNavigation() {
+    if (!isExtensionContextAlive()) {
+      shutdown();
+      return;
+    }
+    if (location.href === state.watchedHref) return;
+    state.watchedHref = location.href;
+    state.linkedInPendingSince = 0;
+    state.lastTextFingerprint = "";
+    clearTimeout(state.scanTimer);
+    state.scanDeadline = 0;
+    state.scanTimer = setTimeout(() => scanPage(true), NAVIGATION_SCAN_DELAY);
+  }
+
+  function watchNavigation() {
+    state.watchedHref = location.href;
+    clearInterval(state.navigationTimer);
+    state.navigationTimer = setInterval(handleNavigation, NAVIGATION_POLL_INTERVAL);
+    window.addEventListener("popstate", handleNavigation);
+    window.addEventListener("hashchange", handleNavigation);
+    // LinkedIn does not render a job description at all while the tab is
+    // hidden, so a listing opened in a background tab must be read again once
+    // the user actually looks at it.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") return;
+      state.linkedInPendingSince = 0;
+      state.lastTextFingerprint = "";
+      scheduleScan(NAVIGATION_SCAN_DELAY);
+    });
   }
 
   function configureObserver() {
@@ -2551,7 +2777,10 @@
     }
     if (message.type === "SPONSORLENS_FORCE_SCAN") {
       state.lastTextFingerprint = "";
-      sendResponse({ ok: true, result: scanPage(true, { reveal: true }) });
+      // A pending pane returns no result; keep showing the last verdict rather
+      // than blanking the popup while the page is still filling in.
+      const rescanned = scanPage(true, { reveal: true });
+      sendResponse({ ok: true, result: rescanned || state.result });
       return false;
     }
     if (message.type === "SPONSORLENS_SCAN_ANYWAY") {
@@ -2702,13 +2931,30 @@
     true
   );
 
+  // Scrolling away means the user is done with the card — but only when the
+  // user is the one scrolling. LinkedIn smooth-scrolls its detail pane on every
+  // job switch, dozens of scroll frames arriving at the same moment the new
+  // verdict opens, which would close the card before it is ever seen. A wheel
+  // or touch drag is the evidence that a person asked for the scroll; keyboard
+  // scrolling is already covered by the keydown listener below.
+  function noteScrollIntent() {
+    state.lastScrollIntentAt = Date.now();
+  }
+
+  ["wheel", "touchmove"].forEach((eventName) => {
+    window.addEventListener(eventName, noteScrollIntent, {
+      passive: true,
+      capture: true
+    });
+  });
+
   window.addEventListener(
     "scroll",
     (event) => {
-      if (state.indicatorExpanded && state.expansionMode === "auto") {
-        if (state.host && event.composedPath().includes(state.host)) return;
-        collapseIndicator();
-      }
+      if (!state.indicatorExpanded || state.expansionMode !== "auto") return;
+      if (state.host && event.composedPath().includes(state.host)) return;
+      if (Date.now() - state.lastScrollIntentAt > SCROLL_INTENT_WINDOW) return;
+      collapseIndicator();
     },
     { passive: true, capture: true }
   );
@@ -2717,6 +2963,7 @@
     loadPresentedJobKeys();
     scanPage(true);
     configureObserver();
+    watchNavigation();
     setTimeout(() => scanPage(false), 1400);
   });
 })();

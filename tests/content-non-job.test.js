@@ -88,6 +88,8 @@ function loadContentScript(options = {}) {
     window: { addEventListener() {} },
     chrome: {
       runtime: {
+        // Present on a live context; cleared when the extension is reloaded.
+        id: options.extensionId === undefined ? "sponsorlens-test" : options.extensionId,
         lastError: null,
         getManifest() {
           return { version: "0.9.0-test" };
@@ -123,7 +125,9 @@ function loadContentScript(options = {}) {
     Node: { TEXT_NODE: 3, ELEMENT_NODE: 1 },
     URL,
     setTimeout,
-    clearTimeout
+    clearTimeout,
+    setInterval,
+    clearInterval
   };
   context.globalThis = context;
   vm.runInNewContext(source, context);
@@ -141,6 +145,9 @@ function loadContentScript(options = {}) {
     },
     getStorageListener() {
       return storageListener;
+    },
+    setExtensionId(value) {
+      context.chrome.runtime.id = value;
     }
   };
 }
@@ -707,7 +714,7 @@ function loadLinkedInPage(options) {
         : null;
     },
     querySelectorAll(selector) {
-      if (selector === '[id^="JobDetails_"]') return sections;
+      if (selector.includes('[id^="JobDetails_"]')) return sections;
       return detailRoot && selector === ".jobs-search__job-details--container"
         ? [detailRoot]
         : [];
@@ -855,6 +862,181 @@ test("nested LinkedIn SDUI sections are not scanned twice", () => {
   api.scanPage(true);
 
   assert.equal(scannedTexts[0].split("will not sponsor").length - 1, 1);
+});
+
+const LINKEDIN_SEARCH_LIST_TEXT =
+  "99+ results\nSoftware Developer I\nPowerus\nCharlotte, NC (On-site)\n" +
+  "Software Engineer 1\nIntuit\nSt Cloud, MN (On-site)\nBe an early applicant";
+
+test("a LinkedIn pane that is still a skeleton is not judged from the result list", () => {
+  const { api, published, scannedTexts } = loadLinkedInPage({
+    url: "https://www.linkedin.com/jobs/search-results/?currentJobId=4449138344",
+    bodyText: LINKEDIN_SEARCH_LIST_TEXT,
+    sections: [linkedInSduiSection("JobDetails_AboutTheJob_4449138344", "")]
+  });
+  const result = api.scanPage(true);
+
+  assert.equal(result, null);
+  assert.deepEqual(scannedTexts, []);
+  assert.equal(api.state.result, null);
+  assert.equal(published.length, 0);
+});
+
+test("a LinkedIn skeleton is scanned once the pane fills in", () => {
+  const sections = [linkedInSduiSection("JobDetails_AboutTheJob_4449138344", "")];
+  const { api, scannedTexts } = loadLinkedInPage({
+    url: "https://www.linkedin.com/jobs/search-results/?currentJobId=4449138344",
+    bodyText: LINKEDIN_SEARCH_LIST_TEXT,
+    sections
+  });
+
+  assert.equal(api.scanPage(true), null);
+  sections[0].innerText = LINKEDIN_DETAIL_TEXT;
+  const result = api.scanPage(true);
+
+  assert.equal(result.scanMode, "job");
+  assert.equal(scannedTexts[0].includes("will not sponsor"), true);
+  assert.equal(scannedTexts[0].includes("99+ results"), false);
+});
+
+test("the URL job ID picks the current LinkedIn pane over a longer stale one", () => {
+  const staleText =
+    `About the job\nStale pane. This employer offers visa sponsorship. ${"Padding sentence. ".repeat(20)}`;
+  const { api, published, scannedTexts } = loadLinkedInPage({
+    url: "https://www.linkedin.com/jobs/search-results/?currentJobId=4449138344",
+    // The outgoing listing is still in the document while the incoming pane is
+    // an empty skeleton, so reading the document would label the wrong job.
+    bodyText: `${LINKEDIN_SEARCH_LIST_TEXT}\n${staleText}`,
+    sections: [
+      linkedInSduiSection("JobDetails_AboutTheJob_4435602102", staleText),
+      linkedInSduiSection("JobDetails_AboutTheJob_4449138344", "")
+    ]
+  });
+
+  assert.equal(api.scanPage(true), null);
+  assert.deepEqual(scannedTexts, []);
+  assert.equal(published.length, 0);
+});
+
+test("LinkedIn sections identified only by componentkey are still read", () => {
+  const section = linkedInSduiSection("", LINKEDIN_DETAIL_TEXT);
+  section.getAttribute = (name) =>
+    name === "componentkey" ? "JobDetails_AboutTheJob_4449138344" : null;
+  const { api, published, scannedTexts } = loadLinkedInPage({
+    url: "https://www.linkedin.com/jobs/search-results/?currentJobId=4449138344",
+    bodyText: LINKEDIN_SEARCH_LIST_TEXT,
+    sections: [section]
+  });
+  api.scanPage(true);
+
+  assert.equal(scannedTexts[0].includes("will not sponsor"), true);
+  const capture = published.find(
+    (message) => message.type === "SPONSORLENS_CAPTURE_SAMPLES"
+  );
+  assert.ok(capture);
+  assert.equal(capture.capture.jobKeyHash, linkedInJobKeyHash("4449138344"));
+});
+
+test("a manual page-wide scan ignores the LinkedIn pending gate", () => {
+  const { api, scannedTexts } = loadLinkedInPage({
+    url: "https://www.linkedin.com/jobs/search-results/?currentJobId=4449138344",
+    bodyText: LINKEDIN_SEARCH_LIST_TEXT,
+    sections: [linkedInSduiSection("JobDetails_AboutTheJob_4449138344", "")]
+  });
+
+  assert.equal(api.scanPage(true), null);
+  assert.ok(api.scanPage(true, { pageWide: true }));
+
+  assert.equal(scannedTexts.length, 1);
+  assert.equal(scannedTexts[0].includes("99+ results"), true);
+});
+
+test("hiding the indicator on one LinkedIn listing does not hide it on the next", () => {
+  const section = linkedInSduiSection(
+    "JobDetails_AboutTheJob_4449138344",
+    LINKEDIN_DETAIL_TEXT
+  );
+  const { api } = loadLinkedInPage({
+    url: "https://www.linkedin.com/jobs/search-results/?keywords=software%20engineer",
+    sections: [section]
+  });
+  api.scanPage(true);
+  const firstJobKey = api.state.currentJobKey;
+  api.state.indicatorDismissed = true;
+
+  // Rescanning the same listing keeps it hidden.
+  api.scanPage(true);
+  assert.equal(api.state.currentJobKey, firstJobKey);
+  assert.equal(api.state.indicatorDismissed, true);
+
+  // Opening the next listing brings it back.
+  section.id = "JobDetails_AboutTheJob_4435602102";
+  api.scanPage(true);
+
+  assert.notEqual(api.state.currentJobKey, firstJobKey);
+  assert.equal(api.state.indicatorDismissed, false);
+});
+
+test("a failure in training collection still lets the verdict render and publish", () => {
+  const { api, published } = loadContentScript({
+    url: "https://jobs.example.com/opening/2",
+    title: "Software Engineer",
+    text: "About this job\nWe do not sponsor applicants for employment visas.",
+    collectLocalTrainingSamples: true,
+    disableIndicator: true,
+    analyze(_text, meta) {
+      return {
+        version: "test",
+        status: "no",
+        label: "No sponsorship",
+        summary: "",
+        color: "#dc2626",
+        counts: { no: 1 },
+        evidence: [],
+        isLikelyJobPage: true,
+        scanMode: "job",
+        page: meta
+      };
+    }
+  });
+
+  const original = collector.buildCapture;
+  collector.buildCapture = () => {
+    throw new Error("Extension context invalidated.");
+  };
+  let result;
+  try {
+    result = api.scanPage(true);
+  } finally {
+    collector.buildCapture = original;
+  }
+
+  assert.equal(result.status, "no");
+  assert.equal(api.state.collectionContext, null);
+  assert.equal(
+    published.some((message) => message.type === "SPONSORLENS_RESULT"),
+    true
+  );
+});
+
+test("an orphaned content script stops scanning instead of showing a frozen verdict", () => {
+  const { api, published, setExtensionId } = loadContentScript({
+    url: "https://jobs.example.com/opening/1",
+    text: "About this job\nWe do not sponsor applicants for employment visas."
+  });
+  api.scanPage(true);
+  assert.ok(api.state.result);
+  const publishedBefore = published.length;
+
+  // The extension was reloaded while this page stayed open.
+  api.state.observer = { disconnect() { api.state.observerDisconnected = true; } };
+  setExtensionId(undefined);
+
+  assert.equal(api.scanPage(true), null);
+  assert.equal(published.length, publishedBefore);
+  assert.equal(api.state.host, null);
+  assert.equal(api.state.observer, null);
+  assert.equal(api.state.observerDisconnected, true);
 });
 
 test("page-level corrections can be sent even when no candidate passage was found", () => {
