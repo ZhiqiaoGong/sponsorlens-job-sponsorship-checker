@@ -669,6 +669,18 @@ function respondAsync(promise, sendResponse) {
   return true;
 }
 
+// A result can arrive from a tab the user has already closed, and every
+// chrome.action call for a missing tab rejects. Nothing can be done about it,
+// but an unhandled rejection is logged as an extension error, so it is caught.
+function applyToTab(apply) {
+  try {
+    const outcome = apply();
+    if (outcome && typeof outcome.catch === "function") outcome.catch(() => {});
+  } catch (_error) {
+    // The tab closed between the scan and this update.
+  }
+}
+
 function updateBadge(tabId, result) {
   chrome.storage.sync.get(DEFAULT_SETTINGS, (settings) => {
     if (
@@ -677,18 +689,18 @@ function updateBadge(tabId, result) {
       result.scanMode === "skipped" ||
       result.scanMode === "page"
     ) {
-      chrome.action.setBadgeText({ tabId, text: "" });
-      chrome.action.setTitle({
+      applyToTab(() => chrome.action.setBadgeText({ tabId, text: "" }));
+      applyToTab(() => chrome.action.setTitle({
         tabId,
         title: "SponsorLens: this is not an individual job listing"
-      });
+      }));
       return;
     }
     const badge = BADGES[result.status] || BADGES.unknown;
     const text = settings.enableBadge ? badge.text : "";
-    chrome.action.setBadgeText({ tabId, text });
-    chrome.action.setBadgeBackgroundColor({ tabId, color: badge.color });
-    chrome.action.setTitle({ tabId, title: badge.title });
+    applyToTab(() => chrome.action.setBadgeText({ tabId, text }));
+    applyToTab(() => chrome.action.setBadgeBackgroundColor({ tabId, color: badge.color }));
+    applyToTab(() => chrome.action.setTitle({ tabId, title: badge.title }));
   });
 }
 
