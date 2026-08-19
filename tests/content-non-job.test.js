@@ -248,6 +248,49 @@ test("application URLs are skipped and never produce local training captures", (
   );
 });
 
+test("a board that prints its apply form under the listing is still analysed", () => {
+  let analyzeCalls = 0;
+  const { api, published } = loadContentScript({
+    url: "https://job-boards.greenhouse.io/darkwolfsolutions/jobs/7886153003?utm_source=Simplify",
+    title: "Job Application for Junior AI Software Engineer at Dark Wolf Solutions",
+    disableIndicator: true,
+    text: [
+      "Junior AI Software Engineer",
+      "Key Responsibilities",
+      "Assist with building and maintaining scalable ML data ingestion pipelines.",
+      "Required Qualifications:",
+      "Must be a US Citizen holding an active TS/SCI security clearance.",
+      "Apply for this job",
+      "Resume/CV Attach",
+      "Submit application",
+      "Voluntary Self-Identification"
+    ].join("\n"),
+    // Greenhouse renders the whole application form in the same document.
+    formFieldCount: 35,
+    analyze(_text, meta) {
+      analyzeCalls += 1;
+      return {
+        version: "test",
+        status: "no",
+        label: "No sponsorship",
+        summary: "",
+        color: "#dc2626",
+        counts: { no: 1 },
+        evidence: [{ id: "test:0", matchedText: "Must be a US Citizen" }],
+        isLikelyJobPage: true,
+        scanMode: "job",
+        page: meta
+      };
+    }
+  });
+  const result = api.scanPage(true);
+
+  assert.equal(analyzeCalls, 1);
+  assert.equal(result.scanMode, "job");
+  assert.equal(result.skippedReason, undefined);
+  assert.equal(result.status, "no");
+});
+
 test("an application tab keeps the prior listing verdict without leaving its card open", () => {
   let analyzeCalls = 0;
   const { api, published } = loadContentScript({

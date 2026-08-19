@@ -617,6 +617,29 @@
     return `url:${url.origin}${stablePath}${stableQuery}`;
   }
 
+  // Headings that only a job description carries. A multi-step application flow
+  // shows the questionnaire alone, so counting these separates a real flow from
+  // a board like Greenhouse that prints the description and its apply form in
+  // one document.
+  const LISTING_CONTENT_PATTERNS = [
+    /\bjob description\b/,
+    /\b(?:key |core )?responsibilities\b/,
+    /\bqualifications\b/,
+    /\bwhat you(?:'|\u2019)?(?:ll| will) (?:be doing|do)\b/,
+    /\bwhat we(?:'|\u2019)?(?:re| are) looking for\b/,
+    /\babout (?:the|this) (?:role|position|job|opportunity)\b/,
+    /\bwho you are\b/,
+    /\b(?:required|desired|preferred) skills\b/,
+    /\byears of (?:relevant )?experience\b/
+  ];
+
+  function countListingContent(sample) {
+    return LISTING_CONTENT_PATTERNS.reduce(
+      (total, pattern) => total + (pattern.test(sample) ? 1 : 0),
+      0
+    );
+  }
+
   function isApplicationFlow(text) {
     const url = String(location.href || "").toLowerCase();
     if (
@@ -628,6 +651,11 @@
     }
 
     const sample = analyzer.normalizeText(text).slice(0, 140000).toLowerCase();
+    // The listing itself is still on the page, so the apply form below it is
+    // part of the posting rather than a flow that replaced it. Analysing this
+    // page reads the description, not the questionnaire.
+    if (countListingContent(sample) >= 2) return false;
+
     const signalPatterns = [
       /\byour application\b/,
       /\bapplication questions\b/,
